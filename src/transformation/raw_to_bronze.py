@@ -20,7 +20,7 @@ BRONZE_DIR.mkdir(parents=True, exist_ok=True)
 # l'API pouvant faire évoluer sa structure sans préavis.
 FLAT_DICT_FIELDS = {
     "lieuTravail": ["libelle", "latitude", "longitude", "codePostal", "commune"],
-    "entreprise": ["nom", "entrepriseAdaptee"],
+    "entreprise": ["nom", "description", "entrepriseAdaptee"],
     "salaire": ["libelle"],
     "origineOffre": ["origine", "urlOrigine"],
     "contexteTravail": ["horaires"],

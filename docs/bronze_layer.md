@@ -25,7 +25,7 @@ Les transformations appliquées sont uniquement techniques :
 ## Champs aplatis
 
 - `lieuTravail` → `lieuTravail_libelle`, `lieuTravail_latitude`, `lieuTravail_longitude`, `lieuTravail_codePostal`, `lieuTravail_commune`
-- `entreprise` → `entreprise_nom`, `entreprise_entrepriseAdaptee`
+- `entreprise` → `entreprise_nom`, `entreprise_description`, `entreprise_entrepriseAdaptee`
 - `salaire` → `salaire_libelle`
 - `origineOffre` → `origineOffre_origine`, `origineOffre_urlOrigine`
 - `contexteTravail` → `contexteTravail_horaires`
@@ -55,3 +55,11 @@ Les doublons fonctionnels sur `id` seront analysés et traités dans la couche S
 - Vérifier la validité de `raw_record`.
 - Mesurer les doublons sur `id`.
 - Mesurer les valeurs manquantes sur les colonnes critiques.
+
+## Évolution du schéma Bronze
+
+Après investigation des valeurs manquantes sur `entreprise_nom`, nous avons constaté que la sous-clé `entreprise.description` était parfois présente même lorsque `entreprise.nom` était absent.
+
+La transformation Raw → Bronze a donc été enrichie afin d’ajouter la colonne `entreprise_description`.
+
+Cette colonne permet de conserver une information descriptive utile sur l’entreprise sans inventer de nom d’entreprise lorsque celui-ci n’est pas fourni par la source.

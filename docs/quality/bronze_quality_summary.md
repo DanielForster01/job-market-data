@@ -9,7 +9,7 @@
 | Indicateur | Valeur |
 |---|---:|
 | Nombre de lignes | 971 |
-| Nombre de colonnes | 53 |
+| Nombre de colonnes | 54 |
 | Identifiants uniques | 971 |
 | Doublons sur `id` | 0 |
 | Offres avec salaire renseigné | 249 |

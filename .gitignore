@@ -8,3 +8,5 @@ data/bronze/
 data/silver/
 data/gold/
 reports/
+investigate_bronze.py
+profile_bronze.py
