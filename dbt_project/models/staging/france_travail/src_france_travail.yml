@@ -1,0 +1,48 @@
+version: 2
+
+sources:
+  - name: france_travail
+    description: "Tables sources issues de la couche Silver PostgreSQL."
+    schema: silver
+
+    tables:
+      - name: france_travail_offres
+        description: "Table Silver courante des offres d'emploi France Travail, chargée depuis le fichier Parquet Silver validé."
+
+        columns:
+          - name: id_offre
+            description: "Identifiant unique de l'offre."
+            tests:
+              - not_null
+              - unique
+
+          - name: intitule_offre
+            description: "Titre de l'offre d'emploi."
+            tests:
+              - not_null
+
+          - name: date_creation
+            description: "Date de création de l'offre."
+            tests:
+              - not_null
+
+          - name: code_type_contrat
+            description: "Code du type de contrat."
+
+          - name: libelle_type_contrat
+            description: "Libellé du type de contrat."
+
+          - name: code_rome
+            description: "Code ROME associé à l'offre."
+
+          - name: mot_cle_recherche
+            description: "Mot-clé utilisé lors de la collecte API."
+
+          - name: batch_id
+            description: "Identifiant technique du chargement PostgreSQL."
+
+          - name: date_chargement
+            description: "Date de chargement de la ligne dans PostgreSQL."
+
+          - name: fichier_source_silver
+            description: "Nom du fichier Silver Parquet chargé dans PostgreSQL."
