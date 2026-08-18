@@ -133,7 +133,17 @@ def flatten_job(job: dict, raw_source_file: str) -> dict:
             sub_dict = value if isinstance(value, dict) else {}
 
             for sub_key in FLAT_DICT_FIELDS[key]:
-                flat[f"{key}_{sub_key}"] = sub_dict.get(sub_key)
+                sub_value = sub_dict.get(sub_key)
+                # Certaines sous-clés supposées "simples" (ex: horaires)
+                # sont en réalité des listes côté API. On les convertit
+                # en chaîne pour garantir un type scalaire, condition
+                # nécessaire pour tout chargement SQL/Parquet en aval.
+                if isinstance(sub_value, list):
+                    sub_value = "; ".join(
+                        str(item).strip() for item in sub_value if item is not None
+                    ) or None
+
+                flat[f"{key}_{sub_key}"] = sub_value
 
         elif key in JSON_STRING_FIELDS:
             flat[key] = to_json_string(value)
