@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: int_france_travail__offres_enrichies
+    description: >
+      Modèle intermédiaire enrichi à partir du staging France Travail.
+      Il prépare les offres d'emploi pour les futurs modèles marts en ajoutant
+      des catégories métier, des indicateurs de qualité, des informations de
+      localisation, de contrat, de salaire, d'expérience et de tension de recrutement.
+
+    columns:
+      - name: id_offre
+        description: "Identifiant unique de l'offre d'emploi."
+        tests:
+          - not_null
+          - unique
+
+      - name: intitule_offre
+        description: "Titre de l'offre d'emploi."
+        tests:
+          - not_null
+
+      - name: date_creation
+        description: "Date de création de l'offre."
+        tests:
+          - not_null
+
+      - name: categorie_contrat
+        description: "Catégorie analytique du contrat : CDI, CDD / mission, Alternance, Indépendant / franchise, Non renseigné ou Autre."
+        tests:
+          - not_null
+
+      - name: famille_metier_data
+        description: "Famille métier data déduite du titre, de la description et du mot-clé de recherche."
+        tests:
+          - not_null
+
+      - name: score_qualite_offre
+        description: "Score de complétude de l'offre calculé à partir de plusieurs champs clés."
+        tests:
+          - not_null
+
+      - name: categorie_qualite_offre
+        description: "Niveau de complétude de l'offre selon le score qualité."
+        tests:
+          - not_null
+
+      - name: batch_id
+        description: "Identifiant technique du chargement PostgreSQL."
+        tests:
+          - not_null
