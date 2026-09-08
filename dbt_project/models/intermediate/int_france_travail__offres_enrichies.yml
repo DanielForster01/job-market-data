@@ -49,3 +49,9 @@ models:
         description: "Identifiant technique du chargement PostgreSQL."
         tests:
           - not_null
+      
+      - name: mention_cloud_devops
+        description: "Indique si l'offre mentionne au moins une compétence ou technologie liée au Cloud, au DevOps ou à l'industrialisation."
+
+      - name: technologies_cloud_devops_detectees
+        description: "Liste des technologies Cloud / DevOps détectées dans le texte de l'offre."

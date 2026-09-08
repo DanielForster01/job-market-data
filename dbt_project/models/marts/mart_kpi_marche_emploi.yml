@@ -1,0 +1,87 @@
+version: 2
+
+models:
+  - name: mart_kpi_marche_emploi
+    description: >
+      Mart analytique global du projet Job Market Data. Ce modèle produit une
+      ligne de KPI permettant de piloter le marché observé des offres data :
+      volume total, répartition métier, types de contrat, transparence salariale,
+      tension de recrutement, géolocalisation, qualité des offres et traçabilité
+      du batch analysé.
+
+    columns:
+      - name: date_calcul_kpi
+        description: "Date et heure de calcul des KPI."
+        tests:
+          - not_null
+
+      - name: batch_id
+        description: "Identifiant du dernier batch Silver utilisé dans la couche intermediate."
+        tests:
+          - not_null
+
+      - name: fichier_source_silver
+        description: "Nom du fichier Silver Parquet à l'origine du batch analysé."
+        tests:
+          - not_null
+
+      - name: date_chargement_batch
+        description: "Date de chargement du batch analysé."
+        tests:
+          - not_null
+
+      - name: nombre_total_offres
+        description: "Nombre total d'offres data distinctes analysées."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_engineering
+        description: "Nombre d'offres classées dans la famille Data Engineering."
+        tests:
+          - not_null
+
+      - name: part_data_engineering_pct
+        description: "Part des offres Data Engineering parmi l'ensemble des offres analysées."
+        tests:
+          - not_null
+
+      - name: taux_transparence_salariale_pct
+        description: "Part des offres pour lesquelles une information salariale est renseignée."
+        tests:
+          - not_null
+
+      - name: taux_offres_difficiles_a_pourvoir_pct
+        description: "Part des offres signalées comme difficiles à pourvoir."
+        tests:
+          - not_null
+
+      - name: taux_information_entreprise_disponible_pct
+        description: "Part des offres disposant d'une information entreprise disponible."
+        tests:
+          - not_null
+
+      - name: taux_offres_geolocalisees_pct
+        description: "Part des offres disposant de coordonnées géographiques."
+        tests:
+          - not_null
+
+      - name: nombre_departements_couverts
+        description: "Nombre de départements distincts couverts par les offres analysées."
+        tests:
+          - not_null
+
+      - name: anciennete_moyenne_offres_jours
+        description: "Ancienneté moyenne des offres en nombre de jours."
+        tests:
+          - not_null
+
+      - name: score_moyen_qualite_offre
+        description: "Score moyen de complétude des offres."
+        tests:
+          - not_null
+     
+      - name: nombre_offres_mention_cloud_devops
+        description: "Nombre d'offres mentionnant au moins une compétence Cloud, DevOps ou d'industrialisation."
+
+      - name: taux_offres_mention_cloud_devops_pct
+        description: "Part des offres mentionnant au moins une compétence Cloud, DevOps ou d'industrialisation."

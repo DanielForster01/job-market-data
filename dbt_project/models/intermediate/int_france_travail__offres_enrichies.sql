@@ -168,6 +168,7 @@ offres_enrichies as (
               or texte_analyse_offre like '%ingenieur data%'
               or texte_analyse_offre like '%data ingénieur%'
               or texte_analyse_offre like '%data ingenieur%'
+              or texte_analyse_offre like '%analytics engineer%'
                 then 'Data Engineering'
 
             when texte_analyse_offre like '%data analyst%'
@@ -176,6 +177,7 @@ offres_enrichies as (
               or texte_analyse_offre like '%analyste données%'
               or texte_analyse_offre like '%analyste donnees%'
               or texte_analyse_offre like '%bi%'
+              or texte_analyse_offre like '%bi analyst%'
               or texte_analyse_offre like '%business intelligence%'
                 then 'Data Analysis / BI'
 
@@ -186,15 +188,44 @@ offres_enrichies as (
               or texte_analyse_offre like '%ml engineer%'
                 then 'Data Science / IA'
 
-            when texte_analyse_offre like '%devops%'
-              or texte_analyse_offre like '%cloud%'
-              or texte_analyse_offre like '%azure%'
-              or texte_analyse_offre like '%aws%'
-              or texte_analyse_offre like '%gcp%'
-                then 'Cloud / DevOps'
-
             else 'Autre data / numérique'
         end as famille_metier_data,
+
+        case
+            when texte_analyse_offre like '%cloud%'
+              or texte_analyse_offre like '%devops%'
+              or texte_analyse_offre like '%aws%'
+              or texte_analyse_offre like '%azure%'
+              or texte_analyse_offre like '%gcp%'
+              or texte_analyse_offre like '%docker%'
+              or texte_analyse_offre like '%kubernetes%'
+              or texte_analyse_offre like '%terraform%'
+              or texte_analyse_offre like '%ci/cd%'
+              or texte_analyse_offre like '%cicd%'
+                then true
+            
+            else false
+        end as mention_cloud_devops,
+
+        nullif(
+            concat_ws(
+                ', ',
+                case when texte_analyse_offre like '%aws%' then 'AWS' end,
+                case when texte_analyse_offre like '%azure%' then 'Azure' end,
+                case when texte_analyse_offre like '%gcp%' then 'GCP' end,
+                case when texte_analyse_offre like '%cloud%' then 'Cloud' end,
+                case when texte_analyse_offre like '%devops%' then 'DevOps' end,
+                case when texte_analyse_offre like '%docker%' then 'Docker' end,
+                case when texte_analyse_offre like '%kubernetes%' then 'Kubernetes' end,
+                case when texte_analyse_offre like '%terraform%' then 'Terraform' end,
+                case
+                    when texte_analyse_offre like '%ci/cd%'
+                      or texte_analyse_offre like '%cicd%'
+                        then 'CI/CD'
+                end
+            ),
+            ''
+        ) as technologies_cloud_devops_detectees,
 
         -- Salaire
         salaire_libelle,
