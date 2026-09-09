@@ -58,12 +58,16 @@ offres_enrichies as (
         date_creation,
         date_actualisation,
         date_actualisation_coherente,
+        date_ingestion,
         date_traitement_silver,
         date_chargement,
 
+        coalesce(date_ingestion::date, date_chargement::date) as date_reference_analyse,
+
         case
-            when date_creation is not null
-                then greatest(0, current_date - date_creation::date)
+            when date_creation is not null 
+             and coalesce(date_ingestion::date, date_chargement::date) is not null
+                then greatest(0, coalesce(date_ingestion::date, date_chargement::date) - date_creation::date)
             else null
         end as anciennete_offre_jours,
 
@@ -76,7 +80,8 @@ offres_enrichies as (
 
         case
             when date_creation is not null
-             and date_creation::date >= current_date - interval '30 days'
+             and coalesce(date_ingestion::date, date_chargement::date) is not null
+             and date_creation::date >= coalesce(date_ingestion::date, date_chargement::date) - interval '30 days'
                 then true
             else false
         end as est_offre_recente_30j,
