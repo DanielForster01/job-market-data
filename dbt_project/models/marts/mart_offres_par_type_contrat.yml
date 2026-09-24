@@ -1,0 +1,117 @@
+version: 2
+
+models:
+  - name: mart_offres_par_type_contrat
+    description: >
+      Mart analytique comparant les offres d'emploi selon leur catégorie de
+      contrat. Il permet d'analyser le poids de chaque type de contrat ainsi
+      que la répartition des familles métiers, la transparence salariale,
+      les mentions Cloud / DevOps, la tension de recrutement, la récence,
+      la couverture géographique et la qualité des offres.
+
+    columns:
+      - name: date_calcul_kpi
+        description: "Date et heure de calcul des KPI."
+        tests:
+          - not_null
+
+      - name: rang_type_contrat
+        description: "Rang du type de contrat selon son volume d'offres."
+        tests:
+          - not_null
+          - unique
+
+      - name: categorie_contrat
+        description: "Catégorie analytique du contrat."
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              arguments:
+                values:
+                  - CDI
+                  - CDD / mission
+                  - Alternance
+                  - Indépendant / franchise
+                  - Autre
+                  - Non renseigné
+
+      - name: batch_id
+        description: "Identifiant du batch utilisé pour le calcul."
+        tests:
+          - not_null
+
+      - name: fichier_source_silver
+        description: "Fichier Silver à l'origine des données analysées."
+        tests:
+          - not_null
+
+      - name: nombre_offres
+        description: "Nombre d'offres distinctes du type de contrat."
+        tests:
+          - not_null
+
+      - name: part_offres_pct
+        description: "Part du type de contrat dans l'ensemble des offres."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_engineering
+        description: "Nombre d'offres Data Engineering pour ce type de contrat."
+        tests:
+          - not_null
+
+      - name: part_data_engineering_dans_contrat_pct
+        description: "Part du Data Engineering dans le type de contrat."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_analysis_bi
+        description: "Nombre d'offres Data Analysis / BI pour ce type de contrat."
+        tests:
+          - not_null
+
+      - name: part_data_analysis_bi_dans_contrat_pct
+        description: "Part de Data Analysis / BI dans le type de contrat."
+        tests:
+          - not_null
+
+      - name: taux_transparence_salariale_pct
+        description: "Part des offres du type de contrat disposant d'une information salariale."
+        tests:
+          - not_null
+
+      - name: taux_mention_cloud_devops_pct
+        description: "Part des offres du type de contrat mentionnant Cloud, DevOps ou une technologie d'industrialisation."
+        tests:
+          - not_null
+
+      - name: taux_offres_difficiles_a_pourvoir_pct
+        description: "Part des offres du type de contrat signalées comme difficiles à pourvoir."
+        tests:
+          - not_null
+
+      - name: taux_offres_geolocalisees_pct
+        description: "Part des offres disposant de coordonnées géographiques."
+        tests:
+          - not_null
+
+      - name: nombre_departements_couverts
+        description: "Nombre de départements couverts par le type de contrat."
+        tests:
+          - not_null
+
+      - name: taux_offres_recentes_30j_pct
+        description: "Part des offres créées dans les 30 jours précédant leur collecte."
+        tests:
+          - not_null
+
+      - name: anciennete_moyenne_offres_jours
+        description: "Ancienneté moyenne des offres au moment de leur collecte."
+        tests:
+          - not_null
+
+      - name: score_moyen_qualite_offre
+        description: "Score moyen de complétude des offres."
+        tests:
+          - not_null
