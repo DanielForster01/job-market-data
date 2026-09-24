@@ -1,0 +1,149 @@
+version: 2
+
+models:
+  - name: mart_offres_par_famille_metier
+    description: >
+      Mart analytique qui compare les offres d'emploi par famille métier data.
+      Il permet d'analyser le poids de chaque famille métier, la structure des contrats,
+      la transparence salariale, les mentions Cloud / DevOps, la tension de recrutement,
+      la géolocalisation, la récence et la qualité des offres.
+
+    columns:
+      - name: date_calcul_kpi
+        description: "Date et heure de calcul des KPI."
+        tests:
+          - not_null
+
+      - name: rang_famille_metier
+        description: "Rang de la famille métier selon le nombre d'offres."
+        tests:
+          - not_null
+          - unique
+
+      - name: famille_metier_data
+        description: "Famille métier principale de l'offre."
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              arguments:
+                values:
+                  - Data Engineering
+                  - Data Analysis / BI
+                  - Data Science / IA
+                  - Autre data / numérique
+
+      - name: batch_id
+        description: "Identifiant du batch analysé."
+        tests:
+          - not_null
+
+      - name: fichier_source_silver
+        description: "Fichier Silver source utilisé."
+        tests:
+          - not_null
+
+      - name: date_chargement_batch
+        description: "Date de chargement du batch analysé."
+        tests:
+          - not_null
+
+      - name: nombre_offres
+        description: "Nombre d'offres distinctes dans la famille métier."
+        tests:
+          - not_null
+
+      - name: part_offres_pct
+        description: "Part de la famille métier dans l'ensemble des offres analysées."
+        tests:
+          - not_null
+
+      - name: nombre_offres_cdi
+        description: "Nombre d'offres en CDI dans la famille métier."
+        tests:
+          - not_null
+
+      - name: part_cdi_dans_famille_pct
+        description: "Part des offres en CDI dans la famille métier."
+        tests:
+          - not_null
+
+      - name: nombre_offres_salaire_renseigne
+        description: "Nombre d'offres avec salaire renseigné dans la famille métier."
+        tests:
+          - not_null
+
+      - name: taux_transparence_salariale_pct
+        description: "Part des offres avec salaire renseigné dans la famille métier."
+        tests:
+          - not_null
+
+      - name: nombre_offres_mention_cloud_devops
+        description: "Nombre d'offres de la famille métier mentionnant au moins une compétence Cloud, DevOps ou d'industrialisation."
+        tests:
+          - not_null
+
+      - name: taux_mention_cloud_devops_pct
+        description: "Part des offres de la famille métier mentionnant au moins une compétence Cloud, DevOps ou d'industrialisation."
+        tests:
+          - not_null
+
+      - name: nombre_offres_difficiles_a_pourvoir
+        description: "Nombre d'offres signalées comme difficiles à pourvoir dans la famille métier."
+        tests:
+          - not_null
+
+      - name: taux_offres_difficiles_a_pourvoir_pct
+        description: "Part des offres difficiles à pourvoir dans la famille métier."
+        tests:
+          - not_null
+
+      - name: nombre_offres_information_entreprise_disponible
+        description: "Nombre d'offres avec information entreprise disponible dans la famille métier."
+        tests:
+          - not_null
+
+      - name: taux_information_entreprise_disponible_pct
+        description: "Part des offres avec information entreprise disponible dans la famille métier."
+        tests:
+          - not_null
+
+      - name: nombre_offres_geolocalisees
+        description: "Nombre d'offres géolocalisées dans la famille métier."
+        tests:
+          - not_null
+
+      - name: taux_offres_geolocalisees_pct
+        description: "Part des offres géolocalisées dans la famille métier."
+        tests:
+          - not_null
+
+      - name: nombre_departements_couverts
+        description: "Nombre de départements couverts par la famille métier."
+        tests:
+          - not_null
+
+      - name: nombre_offres_recentes_30j
+        description: "Nombre d'offres créées dans les 30 jours précédant la date d'ingestion."
+        tests:
+          - not_null
+
+      - name: taux_offres_recentes_30j_pct
+        description: "Part des offres récentes dans la famille métier."
+        tests:
+          - not_null
+
+      - name: anciennete_moyenne_offres_jours
+        description: "Ancienneté moyenne des offres dans la famille métier."
+        tests:
+          - not_null
+
+      - name: delai_moyen_actualisation_jours
+        description: "Délai moyen entre création et actualisation des offres."
+        tests:
+          - not_null
+
+      - name: score_moyen_qualite_offre
+        description: "Score moyen de qualité des offres dans la famille métier."
+        tests:
+          - not_null
