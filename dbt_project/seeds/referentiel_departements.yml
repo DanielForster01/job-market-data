@@ -1,0 +1,29 @@
+version: 2
+
+seeds:
+  - name: referentiel_departements
+    description: >
+      Référentiel officiel des départements et régions françaises
+      construit à partir du Code officiel géographique 2026 de l'Insee.
+
+    columns:
+      - name: code_departement
+        description: "Code officiel du département."
+        tests:
+          - not_null
+          - unique
+
+      - name: nom_departement
+        description: "Libellé officiel du département."
+        tests:
+          - not_null
+
+      - name: code_region
+        description: "Code officiel de la région de rattachement."
+        tests:
+          - not_null
+
+      - name: nom_region
+        description: "Libellé officiel de la région de rattachement."
+        tests:
+          - not_null

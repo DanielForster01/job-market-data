@@ -1,0 +1,177 @@
+version: 2
+
+models:
+  - name: mart_offres_par_departement
+    description: >
+      Mart analytique territorial des offres d'emploi data.
+      Les départements sont enrichis avec le référentiel géographique officiel
+      chargé via dbt seed. Le modèle permet d'analyser le volume d'offres,
+      les familles métiers, les contrats, la transparence salariale,
+      les compétences Cloud / DevOps, la récence et la qualité par département
+      et région.
+
+    columns:
+      - name: date_calcul_kpi
+        description: "Date et heure de calcul des KPI."
+        tests:
+          - not_null
+
+      - name: rang_departement
+        description: "Rang du département selon le nombre d'offres."
+        tests:
+          - not_null
+          - unique
+
+      - name: code_departement
+        description: >
+          Code du département. La valeur NON_RENSEIGNE est utilisée lorsque
+          aucune localisation départementale fiable n'a pu être déterminée.
+        tests:
+          - not_null
+          - unique
+
+      - name: nom_departement
+        description: >
+          Nom officiel du département issu du référentiel géographique,
+          ou Non renseigné lorsqu'aucun département n'a pu être déterminé.
+        tests:
+          - not_null
+
+      - name: code_region
+        description: >
+          Code de la région de rattachement du département,
+          ou NR pour les offres non rattachables.
+        tests:
+          - not_null
+
+      - name: nom_region
+        description: >
+          Nom de la région de rattachement,
+          ou Non renseigné pour les offres non rattachables.
+        tests:
+          - not_null
+
+      - name: batch_id
+        description: "Identifiant du batch analysé."
+        tests:
+          - not_null
+
+      - name: fichier_source_silver
+        description: "Fichier Silver à l'origine des données."
+        tests:
+          - not_null
+
+      - name: date_chargement_batch
+        description: "Date de chargement PostgreSQL du batch analysé."
+        tests:
+          - not_null
+
+      - name: nombre_offres
+        description: "Nombre d'offres distinctes du département."
+        tests:
+          - not_null
+
+      - name: part_offres_pct
+        description: "Part du département dans les 971 offres analysées."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_engineering
+        description: "Nombre d'offres classées Data Engineering."
+        tests:
+          - not_null
+
+      - name: part_data_engineering_pct
+        description: "Part des offres Data Engineering dans le département."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_analysis_bi
+        description: "Nombre d'offres classées Data Analysis / BI."
+        tests:
+          - not_null
+
+      - name: part_data_analysis_bi_pct
+        description: "Part des offres Data Analysis / BI dans le département."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_science_ia
+        description: "Nombre d'offres Data Science / IA."
+        tests:
+          - not_null
+
+      - name: nombre_offres_cdi
+        description: "Nombre d'offres en CDI."
+        tests:
+          - not_null
+
+      - name: part_cdi_pct
+        description: "Part des offres en CDI."
+        tests:
+          - not_null
+
+      - name: nombre_offres_alternance
+        description: "Nombre d'offres en alternance."
+        tests:
+          - not_null
+
+      - name: part_alternance_pct
+        description: "Part des offres en alternance."
+        tests:
+          - not_null
+
+      - name: nombre_offres_salaire_renseigne
+        description: "Nombre d'offres disposant d'une information salariale."
+        tests:
+          - not_null
+
+      - name: taux_transparence_salariale_pct
+        description: "Part des offres disposant d'une information salariale."
+        tests:
+          - not_null
+
+      - name: nombre_offres_mention_cloud_devops
+        description: >
+          Nombre d'offres mentionnant au moins une compétence Cloud,
+          DevOps ou d'industrialisation.
+        tests:
+          - not_null
+
+      - name: taux_mention_cloud_devops_pct
+        description: >
+          Part des offres mentionnant Cloud, DevOps ou une technologie
+          d'industrialisation.
+        tests:
+          - not_null
+
+      - name: nombre_offres_difficiles_a_pourvoir
+        description: "Nombre d'offres signalées comme difficiles à pourvoir."
+        tests:
+          - not_null
+
+      - name: taux_offres_difficiles_a_pourvoir_pct
+        description: "Part des offres signalées comme difficiles à pourvoir."
+        tests:
+          - not_null
+
+      - name: nombre_offres_recentes_30j
+        description: >
+          Nombre d'offres créées dans les 30 jours précédant leur collecte.
+        tests:
+          - not_null
+
+      - name: taux_offres_recentes_30j_pct
+        description: "Part des offres récentes de moins de 30 jours."
+        tests:
+          - not_null
+
+      - name: anciennete_moyenne_offres_jours
+        description: "Ancienneté moyenne des offres au moment de leur collecte."
+        tests:
+          - not_null
+
+      - name: score_moyen_qualite_offre
+        description: "Score moyen de complétude des offres du département."
+        tests:
+          - not_null
