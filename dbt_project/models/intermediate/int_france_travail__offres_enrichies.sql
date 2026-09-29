@@ -94,9 +94,55 @@ offres_enrichies as (
         code_commune,
 
         case
-            when code_postal is not null
-             and length(trim(code_postal)) >= 2
-                then left(trim(code_postal), 2)
+            
+            -- Corse à partir du code commune INSEE
+            when upper(trim(code_commune::text)) like '2A%'
+                then '2A'
+
+            when upper(trim(code_commune::text)) like '2B%'
+                then '2B'
+
+            -- Départements ultramarins
+            when trim(code_commune::text) ~ '^97[1-6]'
+                then left(trim(code_commune::text), 3)
+
+            -- Collectivités ultramarines
+            when trim(code_commune::text) ~ '^98[4-8]'
+                then left(trim(code_commune::text), 3)
+
+            -- France métropolitaine
+            when trim(code_commune::text) ~ '^[0-9]{5}$'
+                then left(trim(code_commune::text), 2)
+
+            -- Fallback DOM à partir du code postal
+            when trim(code_postal::text) ~ '^97[1-6]'
+                then left(trim(code_postal::text), 3)
+
+            -- Fallback collectivités ultramarines
+            when trim(code_postal::text) ~ '^98[4-8]'
+                then left(trim(code_postal::text), 3)
+
+            -- Fallback métropole à partir du code postal
+            when trim(code_postal::text) ~ '^[0-9]{5}$'
+                then left(trim(code_postal::text), 2)
+
+            -- Fallback Corse à partir du libellé
+            when upper(trim(libelle_lieu_travail)) ~ '^2A\s*-'
+                 then '2A'
+
+            when upper(trim(libelle_lieu_travail)) ~ '^2B\s*-'
+                then '2B'
+            
+            -- Fallback DOM / outre-mer à partir du libellé
+            when trim(libelle_lieu_travail) ~ '^97[1-6]\s*-'
+                then substring(trim(libelle_lieu_travail) from '^([0-9]{3})')
+
+            when trim(libelle_lieu_travail) ~ '^98[4-8]\s*-'
+                then substring(trim(libelle_lieu_travail) from '^([0-9]{3})')
+
+            -- Fallback métropole à partir du libellé
+            when trim(libelle_lieu_travail) ~ '^[0-9]{2}\s*-'
+                then substring(trim(libelle_lieu_travail) from '^([0-9]{2})')
             else null
         end as code_departement,
 

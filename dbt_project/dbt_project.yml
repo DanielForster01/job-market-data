@@ -25,3 +25,14 @@ models:
     marts:
       +schema: marts
       +materialized: table
+
+seeds:
+  job_market_dbt:
+    +schema: reference
+
+    referentiel_departements:
+      +column_types:
+        code_departement: varchar(3)
+        nom_departement: varchar(200)
+        code_region: varchar(2)
+        nom_region: varchar(200)
