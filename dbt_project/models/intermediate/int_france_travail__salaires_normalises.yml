@@ -1,0 +1,98 @@
+version: 2
+
+models:
+  - name: int_france_travail__salaires_normalises
+    description: >
+      Modèle intermédiaire dédié au parsing, à l'annualisation et au
+      contrôle qualité des salaires renseignés dans les offres France Travail.
+      Les valeurs mensuelles sont annualisées sur 12 mois. Les salaires
+      horaires ne sont pas annualisés. Les valeurs atypiques sont conservées
+      et flaggées mais exclues des KPI salariaux.
+
+    columns:
+      - name: id_offre
+        description: "Identifiant unique de l'offre."
+        tests:
+          - not_null
+          - unique
+
+      - name: salaire_libelle
+        description: "Libellé salarial brut provenant de la donnée source."
+        tests:
+          - not_null
+
+      - name: salaire_parse_ok
+        description: "Indique si le format salarial a pu être parsé."
+        tests:
+          - not_null
+
+      - name: periode_extraite
+        description: "Période salariale extraite du libellé."
+
+      - name: periode_salaire_coherente
+        description: >
+          Vérifie la cohérence entre la période extraite du libellé
+          et la période normalisée précédemment.
+        tests:
+          - not_null
+
+      - name: salaire_min_brut
+        description: "Borne salariale minimale extraite du libellé."
+
+      - name: salaire_max_brut
+        description: >
+          Borne maximale extraite. Pour un montant unique,
+          elle est égale à la borne minimale.
+
+      - name: salaire_central_brut
+        description: "Milieu de la fourchette avant annualisation."
+
+      - name: format_salaire
+        description: "Type de salaire : Fourchette ou Montant unique."
+
+      - name: duree_mois_brute
+        description: >
+          Durée éventuellement indiquée dans le libellé salarial.
+          Elle n'est pas utilisée pour l'annualisation des KPI.
+
+      - name: salaire_annuel_min
+        description: "Borne minimale annualisée en euros."
+
+      - name: salaire_annuel_max
+        description: "Borne maximale annualisée en euros."
+
+      - name: salaire_annuel_central
+        description: >
+          Valeur centrale de la fourchette annualisée utilisée
+          pour les statistiques salariales.
+
+      - name: methode_normalisation_salaire
+        description: >
+          Méthode utilisée : Déjà annuel, Mensuel x 12,
+          Non annualisé ou Non parsé.
+        tests:
+          - not_null
+
+      - name: salaire_suspect
+        description: >
+          Indique qu'une valeur annualisée dépasse le seuil de contrôle
+          qualité défini pour le batch analysé.
+        tests:
+          - not_null
+
+      - name: salaire_exploitable
+        description: >
+          Indique si le salaire peut être utilisé dans les KPI salariaux.
+        tests:
+          - not_null
+
+      - name: motif_non_exploitation
+        description: >
+          Motif expliquant pourquoi le salaire est exclu des KPI.
+
+      - name: seuil_salaire_annuel_suspect
+        description: >
+          Seuil de contrôle qualité utilisé pour identifier les valeurs
+          salariales atypiques dans le batch analysé.
+        tests:
+          - not_null
