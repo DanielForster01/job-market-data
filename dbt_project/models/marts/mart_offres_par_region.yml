@@ -1,0 +1,174 @@
+version: 2
+
+models:
+  - name: mart_offres_par_region
+    description: >
+      Mart analytique régional des offres d'emploi data.
+      Les régions sont déterminées à partir du référentiel géographique
+      officiel chargé via dbt seed. Le modèle permet de comparer les régions
+      selon le volume d'offres, les familles métiers, les contrats,
+      la transparence salariale, les mentions Cloud / DevOps,
+      la tension de recrutement, la récence et la qualité des annonces.
+
+    columns:
+      - name: date_calcul_kpi
+        description: "Date et heure de calcul des KPI."
+        tests:
+          - not_null
+
+      - name: rang_region
+        description: "Rang de la région selon le nombre d'offres."
+        tests:
+          - not_null
+          - unique
+
+      - name: code_region
+        description: >
+          Code officiel de la région. NR est utilisé lorsque l'offre
+          ne peut pas être rattachée à une région.
+        tests:
+          - not_null
+          - unique
+
+      - name: nom_region
+        description: >
+          Nom officiel de la région ou Non renseigné pour les offres
+          sans rattachement géographique fiable.
+        tests:
+          - not_null
+          - unique
+
+      - name: batch_id
+        description: "Identifiant du batch analysé."
+        tests:
+          - not_null
+
+      - name: fichier_source_silver
+        description: "Nom du fichier Silver à l'origine du batch."
+        tests:
+          - not_null
+
+      - name: date_chargement_batch
+        description: "Date de chargement PostgreSQL du batch."
+        tests:
+          - not_null
+
+      - name: nombre_offres
+        description: "Nombre d'offres distinctes dans la région."
+        tests:
+          - not_null
+
+      - name: part_offres_pct
+        description: "Part de la région dans l'ensemble des offres analysées."
+        tests:
+          - not_null
+
+      - name: nombre_departements_couverts
+        description: "Nombre de départements représentés dans la région."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_engineering
+        description: "Nombre d'offres Data Engineering."
+        tests:
+          - not_null
+
+      - name: part_data_engineering_pct
+        description: "Part des offres Data Engineering dans la région."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_analysis_bi
+        description: "Nombre d'offres Data Analysis / BI."
+        tests:
+          - not_null
+
+      - name: part_data_analysis_bi_pct
+        description: "Part des offres Data Analysis / BI dans la région."
+        tests:
+          - not_null
+
+      - name: nombre_offres_data_science_ia
+        description: "Nombre d'offres Data Science / IA."
+        tests:
+          - not_null
+
+      - name: part_data_science_ia_pct
+        description: "Part des offres Data Science / IA dans la région."
+        tests:
+          - not_null
+
+      - name: nombre_offres_cdi
+        description: "Nombre d'offres en CDI."
+        tests:
+          - not_null
+
+      - name: part_cdi_pct
+        description: "Part des offres en CDI dans la région."
+        tests:
+          - not_null
+
+      - name: nombre_offres_alternance
+        description: "Nombre d'offres en alternance."
+        tests:
+          - not_null
+
+      - name: part_alternance_pct
+        description: "Part des offres en alternance dans la région."
+        tests:
+          - not_null
+
+      - name: nombre_offres_salaire_renseigne
+        description: "Nombre d'offres avec information salariale."
+        tests:
+          - not_null
+
+      - name: taux_transparence_salariale_pct
+        description: "Part des offres avec information salariale."
+        tests:
+          - not_null
+
+      - name: nombre_offres_mention_cloud_devops
+        description: >
+          Nombre d'offres mentionnant au moins une compétence Cloud,
+          DevOps ou d'industrialisation.
+        tests:
+          - not_null
+
+      - name: taux_mention_cloud_devops_pct
+        description: >
+          Part des offres mentionnant au moins une compétence Cloud,
+          DevOps ou d'industrialisation.
+        tests:
+          - not_null
+
+      - name: nombre_offres_difficiles_a_pourvoir
+        description: "Nombre d'offres signalées comme difficiles à pourvoir."
+        tests:
+          - not_null
+
+      - name: taux_offres_difficiles_a_pourvoir_pct
+        description: "Part des offres signalées comme difficiles à pourvoir."
+        tests:
+          - not_null
+
+      - name: nombre_offres_recentes_30j
+        description: >
+          Nombre d'offres créées dans les 30 jours précédant leur collecte.
+        tests:
+          - not_null
+
+      - name: taux_offres_recentes_30j_pct
+        description: "Part des offres récentes de moins de 30 jours."
+        tests:
+          - not_null
+
+      - name: anciennete_moyenne_offres_jours
+        description: "Ancienneté moyenne des offres lors de leur collecte."
+        tests:
+          - not_null
+
+      - name: score_moyen_qualite_offre
+        description: "Score moyen de complétude des offres de la région."
+        tests:
+          - not_null
