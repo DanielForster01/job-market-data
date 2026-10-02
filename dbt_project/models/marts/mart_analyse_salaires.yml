@@ -1,0 +1,137 @@
+version: 2
+
+models:
+  - name: mart_analyse_salaires
+    description: >
+      Mart analytique des rémunérations des offres France Travail.
+      Il fournit les principaux KPI salariaux selon plusieurs axes :
+      global, famille métier, type de contrat et région.
+      Les statistiques de rémunération sont calculées uniquement
+      à partir des salaires annualisés et jugés exploitables par
+      le modèle int_france_travail__salaires_normalises.
+
+    columns:
+      - name: date_calcul_kpi
+        description: "Date et heure de calcul du mart."
+        tests:
+          - not_null
+
+      - name: ordre_axe
+        description: "Ordre d'affichage des axes analytiques."
+        tests:
+          - not_null
+
+      - name: axe_analyse
+        description: >
+          Dimension d'analyse : Global, Famille métier,
+          Type de contrat ou Région.
+        tests:
+          - not_null
+
+      - name: rang_modalite
+        description: >
+          Rang de la modalité dans son axe selon le nombre d'offres.
+        tests:
+          - not_null
+
+      - name: code_modalite
+        description: >
+          Identifiant technique de la modalité.
+          Pour une région, il correspond au code région.
+        tests:
+          - not_null
+
+      - name: modalite
+        description: "Libellé métier de la modalité."
+        tests:
+          - not_null
+
+      - name: batch_id
+        description: "Identifiant du batch source."
+        tests:
+          - not_null
+
+      - name: nombre_offres
+        description: >
+          Nombre total d'offres appartenant à la modalité,
+          salaire renseigné ou non.
+        tests:
+          - not_null
+
+      - name: part_offres_pct
+        description: >
+          Part de la modalité dans les offres globales analysées.
+        tests:
+          - not_null
+
+      - name: nombre_salaires_renseignes
+        description: "Nombre d'offres avec un salaire renseigné."
+        tests:
+          - not_null
+
+      - name: taux_transparence_salariale_pct
+        description: >
+          Part des offres disposant d'une information salariale.
+        tests:
+          - not_null
+
+      - name: nombre_salaires_exploitables
+        description: >
+          Nombre d'offres dont le salaire a pu être annualisé
+          et retenu pour les statistiques.
+        tests:
+          - not_null
+
+      - name: taux_salaires_exploitables_sur_total_pct
+        description: >
+          Part des salaires exploitables parmi toutes les offres
+          de la modalité.
+        tests:
+          - not_null
+
+      - name: taux_exploitabilite_salaires_renseignes_pct
+        description: >
+          Part des salaires exploitables parmi les offres
+          disposant d'un salaire renseigné.
+
+      - name: nombre_salaires_suspects
+        description: >
+          Nombre de valeurs salariales identifiées comme atypiques.
+        tests:
+          - not_null
+
+      - name: nombre_salaires_non_exploitables
+        description: >
+          Nombre de salaires renseignés exclus des statistiques.
+        tests:
+          - not_null
+
+      - name: salaire_annuel_moyen
+        description: >
+          Moyenne du salaire annuel central des offres exploitables.
+
+      - name: salaire_annuel_median
+        description: >
+          Médiane du salaire annuel central des offres exploitables.
+
+      - name: premier_quartile
+        description: >
+          Premier quartile du salaire annuel central.
+
+      - name: troisieme_quartile
+        description: >
+          Troisième quartile du salaire annuel central.
+
+      - name: ecart_interquartile
+        description: >
+          Différence entre le troisième et le premier quartile.
+
+      - name: salaire_annuel_min_observe
+        description: >
+          Plus faible salaire annuel central observé parmi
+          les salaires exploitables.
+
+      - name: salaire_annuel_max_observe
+        description: >
+          Plus fort salaire annuel central observé parmi
+          les salaires exploitables.
