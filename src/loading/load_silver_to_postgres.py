@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -11,6 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Dict
 
+import numpy as np
 import pandas as pd
 
 from dotenv import load_dotenv
@@ -116,24 +118,34 @@ INDEX_COLUMNS = [
 ]
 
 
-IDENTIFIER_PATTERN = re.compile(r"^[a-z_][a-z0-9_]*$")
+IDENTIFIER_PATTERN = re.compile(
+    r"^[a-z_][a-z0-9_]*$"
+)
 
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def validate_identifier(identifier: str) -> str:
-    if not IDENTIFIER_PATTERN.fullmatch(identifier):
+def validate_identifier(
+    identifier: str,
+) -> str:
+    if not IDENTIFIER_PATTERN.fullmatch(
+        identifier
+    ):
         raise ValueError(
-            f"Identifiant SQL non autorisé : {identifier!r}"
+            f"Identifiant SQL non autorisé : "
+            f"{identifier!r}"
         )
 
     return identifier
 
 
-def quote_identifier(identifier: str) -> str:
+def quote_identifier(
+    identifier: str,
+) -> str:
     validate_identifier(identifier)
+
     return f'"{identifier}"'
 
 
@@ -145,9 +157,15 @@ def get_postgres_engine() -> Engine:
         override=True,
     )
 
-    postgres_user = os.getenv("POSTGRES_USER")
-    postgres_password = os.getenv("POSTGRES_PASSWORD")
-    postgres_db = os.getenv("POSTGRES_DB")
+    postgres_user = os.getenv(
+        "POSTGRES_USER"
+    )
+    postgres_password = os.getenv(
+        "POSTGRES_PASSWORD"
+    )
+    postgres_db = os.getenv(
+        "POSTGRES_DB"
+    )
     postgres_host = os.getenv(
         "POSTGRES_HOST",
         "localhost",
@@ -167,14 +185,16 @@ def get_postgres_engine() -> Engine:
 
     missing_variables = [
         variable_name
-        for variable_name, variable_value in variables.items()
+        for variable_name, variable_value
+        in variables.items()
         if not variable_value
     ]
 
     if missing_variables:
         raise EnvironmentError(
             "Variables PostgreSQL manquantes : "
-            f"{missing_variables}. Vérifie le fichier .env."
+            f"{missing_variables}. "
+            "Vérifie le fichier .env."
         )
 
     connection_url = URL.create(
@@ -194,17 +214,24 @@ def get_postgres_engine() -> Engine:
 
 def read_silver_from_r2(
     silver_object_key: str,
-) -> tuple[pd.DataFrame, Dict[str, str]]:
+) -> tuple[
+    pd.DataFrame,
+    Dict[str, str],
+]:
     path_info = parse_data_lake_object_key(
         silver_object_key
     )
 
     if path_info.get("layer") != "silver":
         raise ValueError(
-            "L'objet R2 fourni n'appartient pas à la couche Silver."
+            "L'objet R2 fourni "
+            "n'appartient pas à la couche Silver."
         )
 
-    if path_info.get("source") != EXPECTED_SOURCE:
+    if (
+        path_info.get("source")
+        != EXPECTED_SOURCE
+    ):
         raise ValueError(
             "Source R2 inattendue : "
             f"{path_info.get('source')}"
@@ -215,11 +242,15 @@ def read_silver_from_r2(
         != EXPECTED_PATH_VERSION
     ):
         raise ValueError(
-            "Le loader PostgreSQL accepte uniquement "
-            f"les chemins {EXPECTED_PATH_VERSION}."
+            "Le loader PostgreSQL accepte "
+            "uniquement les chemins "
+            f"{EXPECTED_PATH_VERSION}."
         )
 
-    batch_id = path_info.get("batch_id")
+    batch_id = path_info.get(
+        "batch_id"
+    )
+
     processing_run_id = path_info.get(
         "processing_run_id"
     )
@@ -231,7 +262,8 @@ def read_silver_from_r2(
 
     if not processing_run_id:
         raise ValueError(
-            "processing_run_id absent du chemin Silver."
+            "processing_run_id absent "
+            "du chemin Silver."
         )
 
     storage = R2Storage()
@@ -250,12 +282,22 @@ def read_silver_from_r2(
     )
 
     context = {
-        "silver_object_key": silver_object_key,
-        "silver_sha256": silver_sha256,
-        "batch_id": str(batch_id),
-        "processing_run_id": str(processing_run_id),
+        "silver_object_key": (
+            silver_object_key
+        ),
+        "silver_sha256": (
+            silver_sha256
+        ),
+        "batch_id": str(
+            batch_id
+        ),
+        "processing_run_id": str(
+            processing_run_id
+        ),
         "path_version": str(
-            path_info.get("path_version")
+            path_info.get(
+                "path_version"
+            )
         ),
     }
 
@@ -279,13 +321,15 @@ def validate_silver_dataframe(
 
     if missing_columns:
         raise ValueError(
-            "Colonnes Silver obligatoires absentes : "
+            "Colonnes Silver obligatoires "
+            "absentes : "
             f"{missing_columns}"
         )
 
     if df["id_offre"].isna().any():
         raise ValueError(
-            "id_offre contient des valeurs nulles."
+            "id_offre contient "
+            "des valeurs nulles."
         )
 
     if not df["id_offre"].is_unique:
@@ -302,7 +346,8 @@ def validate_silver_dataframe(
         )
 
         raise ValueError(
-            "Des id_offre sont dupliqués dans Silver. "
+            "Des id_offre sont dupliqués "
+            "dans Silver. "
             f"Exemples : {duplicated_ids}"
         )
 
@@ -317,8 +362,9 @@ def validate_silver_dataframe(
         context["batch_id"]
     }:
         raise ValueError(
-            "batch_id incohérent entre le chemin R2 "
-            "et les lignes Silver : "
+            "batch_id incohérent entre "
+            "le chemin R2 et les lignes "
+            "Silver : "
             f"{sorted(batch_values)}"
         )
 
@@ -333,8 +379,9 @@ def validate_silver_dataframe(
         context["processing_run_id"]
     }:
         raise ValueError(
-            "processing_run_id incohérent entre "
-            "le chemin R2 et les lignes Silver : "
+            "processing_run_id incohérent "
+            "entre le chemin R2 et les "
+            "lignes Silver : "
             f"{sorted(run_values)}"
         )
 
@@ -349,9 +396,85 @@ def validate_silver_dataframe(
         EXPECTED_SILVER_SCHEMA_VERSION
     }:
         raise ValueError(
-            "silver_schema_version inattendue : "
+            "silver_schema_version "
+            "inattendue : "
             f"{sorted(schema_versions)}"
         )
+
+
+def normalize_value_for_postgres(
+    value,
+):
+    """
+    Convertit une valeur Pandas/NumPy
+    en valeur compatible PostgreSQL.
+
+    Les structures semi-structurées
+    sont sérialisées en JSON texte afin
+    de préserver leur contenu tout en
+    évitant les erreurs psycopg2 avec
+    numpy.ndarray, list, tuple, dict,
+    set et types NumPy.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        pd.Timestamp,
+    ):
+        if pd.isna(value):
+            return None
+
+        return value.to_pydatetime()
+
+    if isinstance(
+        value,
+        np.ndarray,
+    ):
+        value = value.tolist()
+
+    if isinstance(
+        value,
+        set,
+    ):
+        value = sorted(
+            value,
+            key=str,
+        )
+
+    if isinstance(
+        value,
+        (
+            dict,
+            list,
+            tuple,
+        ),
+    ):
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            default=str,
+        )
+
+    if isinstance(
+        value,
+        np.generic,
+    ):
+        return value.item()
+
+    try:
+        if pd.isna(value):
+            return None
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        pass
+
+    return value
 
 
 def normalize_dataframe_for_postgres(
@@ -360,13 +483,18 @@ def normalize_dataframe_for_postgres(
 ) -> pd.DataFrame:
     df = df.copy()
 
-    df["date_chargement"] = datetime.now(
-        timezone.utc
+    df["date_chargement"] = (
+        datetime.now(
+            timezone.utc
+        )
     )
 
-    # Compatibilité avec les modèles dbt existants.
-    # La valeur contient désormais la clé R2 complète,
-    # ce qui améliore le lineage.
+    # Compatibilité avec les modèles
+    # dbt existants.
+    #
+    # La colonne contient désormais
+    # la clé R2 complète afin de
+    # conserver un lineage explicite.
     df["fichier_source_silver"] = (
         silver_object_key
     )
@@ -381,8 +509,9 @@ def normalize_dataframe_for_postgres(
 
     for column in BOOLEAN_COLUMNS:
         if column in df.columns:
-            df[column] = df[column].astype(
-                "boolean"
+            df[column] = (
+                df[column]
+                .astype("boolean")
             )
 
     for column in INTEGER_COLUMNS:
@@ -390,7 +519,9 @@ def normalize_dataframe_for_postgres(
             df[column] = pd.to_numeric(
                 df[column],
                 errors="coerce",
-            ).astype("Int64")
+            ).astype(
+                "Int64"
+            )
 
     for column in FLOAT_COLUMNS:
         if column in df.columns:
@@ -399,10 +530,25 @@ def normalize_dataframe_for_postgres(
                 errors="coerce",
             )
 
-    df = df.astype(object).where(
-        pd.notna(df),
-        None,
-    )
+    # Conversion finale vers des valeurs
+    # directement compatibles psycopg2.
+    #
+    # Cette étape gère notamment les
+    # numpy.ndarray provenant de certaines
+    # colonnes Parquet comme
+    # horaires_travail.
+    for column in df.columns:
+        df[column] = pd.Series(
+            (
+                normalize_value_for_postgres(
+                    value
+                )
+                for value
+                in df[column].tolist()
+            ),
+            index=df.index,
+            dtype=object,
+        )
 
     return df
 
@@ -411,7 +557,9 @@ def sqlalchemy_type_for_column(
     column: str,
 ) -> TypeEngine:
     if column in DATETIME_COLUMNS:
-        return DateTime(timezone=True)
+        return DateTime(
+            timezone=True
+        )
 
     if column in BOOLEAN_COLUMNS:
         return Boolean()
@@ -445,10 +593,15 @@ def postgres_type_for_column(
 
 def build_dtype_mapping(
     df: pd.DataFrame,
-) -> Dict[str, TypeEngine]:
+) -> Dict[
+    str,
+    TypeEngine,
+]:
     return {
-        column: sqlalchemy_type_for_column(
-            column
+        column: (
+            sqlalchemy_type_for_column(
+                column
+            )
         )
         for column in df.columns
     }
@@ -473,10 +626,14 @@ def ensure_audit_objects(
                 create table if not exists
                     {AUDIT_SCHEMA}.{AUDIT_TABLE}
                 (
-                    run_id bigserial primary key,
-                    pipeline_name text not null,
-                    status text not null,
-                    started_at timestamptz default now(),
+                    run_id bigserial
+                        primary key,
+                    pipeline_name text
+                        not null,
+                    status text
+                        not null,
+                    started_at timestamptz
+                        default now(),
                     finished_at timestamptz,
                     message text
                 );
@@ -497,16 +654,20 @@ def ensure_audit_objects(
             "git_worktree_dirty": "boolean",
         }
 
-        for column, sql_type in (
-            additional_columns.items()
-        ):
-            validate_identifier(column)
+        for (
+            column,
+            sql_type,
+        ) in additional_columns.items():
+            validate_identifier(
+                column
+            )
 
             connection.execute(
                 text(
                     f"""
                     alter table
-                        {AUDIT_SCHEMA}.{AUDIT_TABLE}
+                        {AUDIT_SCHEMA}.
+                        {AUDIT_TABLE}
                     add column if not exists
                         {quote_identifier(column)}
                         {sql_type};
@@ -528,7 +689,8 @@ def start_audit_run(
             text(
                 f"""
                 insert into
-                    {AUDIT_SCHEMA}.{AUDIT_TABLE}
+                    {AUDIT_SCHEMA}.
+                    {AUDIT_TABLE}
                 (
                     pipeline_name,
                     status,
@@ -564,8 +726,14 @@ def start_audit_run(
                 """
             ),
             {
-                "pipeline_name": PIPELINE_NAME,
-                "batch_id": context["batch_id"],
+                "pipeline_name": (
+                    PIPELINE_NAME
+                ),
+                "batch_id": (
+                    context[
+                        "batch_id"
+                    ]
+                ),
                 "processing_run_id": (
                     context[
                         "processing_run_id"
@@ -587,8 +755,12 @@ def start_audit_run(
                 "silver_schema_version": (
                     EXPECTED_SILVER_SCHEMA_VERSION
                 ),
-                "git_commit_sha": git_commit_sha,
-                "git_branch": git_branch,
+                "git_commit_sha": (
+                    git_commit_sha
+                ),
+                "git_branch": (
+                    git_branch
+                ),
                 "git_worktree_dirty": (
                     git_worktree_dirty
                 ),
@@ -616,23 +788,31 @@ def finish_audit_run(
             text(
                 f"""
                 update
-                    {AUDIT_SCHEMA}.{AUDIT_TABLE}
+                    {AUDIT_SCHEMA}.
+                    {AUDIT_TABLE}
                 set
                     status = :status,
                     finished_at = now(),
                     loaded_row_count =
                         :loaded_row_count,
                     message = :message
-                where run_id = :run_id;
+                where
+                    run_id = :run_id;
                 """
             ),
             {
-                "run_id": run_id,
-                "status": status,
+                "run_id": (
+                    run_id
+                ),
+                "status": (
+                    status
+                ),
                 "loaded_row_count": (
                     loaded_row_count
                 ),
-                "message": message,
+                "message": (
+                    message
+                ),
             },
         )
 
@@ -642,7 +822,9 @@ def table_exists(
     schema: str,
     table: str,
 ) -> bool:
-    return inspect(engine).has_table(
+    return inspect(
+        engine
+    ).has_table(
         table_name=table,
         schema=schema,
     )
@@ -653,7 +835,9 @@ def get_table_columns(
     schema: str,
     table: str,
 ) -> set[str]:
-    inspector = inspect(engine)
+    inspector = inspect(
+        engine
+    )
 
     if not inspector.has_table(
         table_name=table,
@@ -663,7 +847,8 @@ def get_table_columns(
 
     return {
         column["name"]
-        for column in inspector.get_columns(
+        for column
+        in inspector.get_columns(
             table_name=table,
             schema=schema,
         )
@@ -681,14 +866,17 @@ def previous_success_exists(
                 select exists (
                     select 1
                     from
-                        {AUDIT_SCHEMA}.{AUDIT_TABLE}
+                        {AUDIT_SCHEMA}.
+                        {AUDIT_TABLE}
                     where
                         pipeline_name =
                             :pipeline_name
-                        and status = 'SUCCESS'
+                        and status =
+                            'SUCCESS'
                         and batch_id =
                             :batch_id
-                        and processing_run_id =
+                        and
+                            processing_run_id =
                             :processing_run_id
                         and source_sha256 =
                             :source_sha256
@@ -696,8 +884,14 @@ def previous_success_exists(
                 """
             ),
             {
-                "pipeline_name": PIPELINE_NAME,
-                "batch_id": context["batch_id"],
+                "pipeline_name": (
+                    PIPELINE_NAME
+                ),
+                "batch_id": (
+                    context[
+                        "batch_id"
+                    ]
+                ),
                 "processing_run_id": (
                     context[
                         "processing_run_id"
@@ -740,7 +934,9 @@ def current_snapshot_matches(
         "id_offre",
     }
 
-    if not required.issubset(columns):
+    if not required.issubset(
+        columns
+    ):
         return False
 
     with engine.begin() as connection:
@@ -748,31 +944,70 @@ def current_snapshot_matches(
             text(
                 f"""
                 select
-                    count(*) as row_count,
-                    count(distinct batch_id)
+                    count(*)
+                        as row_count,
+
+                    count(
+                        distinct batch_id
+                    )
                         as batch_count,
+
                     min(batch_id)
                         as batch_id,
+
                     count(
-                        distinct processing_run_id
-                    ) as run_count,
-                    min(processing_run_id)
+                        distinct
+                        processing_run_id
+                    )
+                        as run_count,
+
+                    min(
+                        processing_run_id
+                    )
                         as processing_run_id
+
                 from
-                    {TARGET_SCHEMA}.{TARGET_TABLE};
+                    {TARGET_SCHEMA}.
+                    {TARGET_TABLE};
                 """
             )
         ).mappings().one()
 
     return (
-        int(result["row_count"])
+        int(
+            result[
+                "row_count"
+            ]
+        )
         == expected_rows
-        and int(result["batch_count"]) == 1
-        and result["batch_id"]
-        == context["batch_id"]
-        and int(result["run_count"]) == 1
-        and result["processing_run_id"]
-        == context["processing_run_id"]
+
+        and int(
+            result[
+                "batch_count"
+            ]
+        )
+        == 1
+
+        and result[
+            "batch_id"
+        ]
+        == context[
+            "batch_id"
+        ]
+
+        and int(
+            result[
+                "run_count"
+            ]
+        )
+        == 1
+
+        and result[
+            "processing_run_id"
+        ]
+        == context[
+            "processing_run_id"
+        ]
     )
 
 
@@ -786,7 +1021,8 @@ def is_already_loaded(
             engine,
             context,
         )
-        and current_snapshot_matches(
+        and
+        current_snapshot_matches(
             engine,
             context,
             expected_rows,
@@ -798,11 +1034,28 @@ def load_dataframe_to_load_table(
     engine: Engine,
     df: pd.DataFrame,
 ) -> None:
-    dtype_mapping = build_dtype_mapping(
-        df
+    dtype_mapping = (
+        build_dtype_mapping(
+            df
+        )
+    )
+
+    logger.info(
+        "Chargement de la table "
+        f"intermédiaire "
+        f"{TARGET_SCHEMA}.{LOAD_TABLE}"
     )
 
     with engine.begin() as connection:
+        connection.execute(
+            text(
+                f"""
+                create schema if not exists
+                    {TARGET_SCHEMA};
+                """
+            )
+        )
+
         df.to_sql(
             name=LOAD_TABLE,
             con=connection,
@@ -828,32 +1081,44 @@ def ensure_target_structure(
         )
     )
 
-    target_exists = connection.execute(
-        text(
-            """
-            select exists (
-                select 1
-                from information_schema.tables
-                where table_schema = :schema_name
-                  and table_name = :table_name
-            );
-            """
-        ),
-        {
-            "schema_name": TARGET_SCHEMA,
-            "table_name": TARGET_TABLE,
-        },
-    ).scalar_one()
+    target_exists = (
+        connection.execute(
+            text(
+                """
+                select exists (
+                    select 1
+                    from
+                        information_schema.tables
+                    where
+                        table_schema =
+                            :schema_name
+                        and table_name =
+                            :table_name
+                );
+                """
+            ),
+            {
+                "schema_name": (
+                    TARGET_SCHEMA
+                ),
+                "table_name": (
+                    TARGET_TABLE
+                ),
+            },
+        ).scalar_one()
+    )
 
     if not target_exists:
         connection.execute(
             text(
                 f"""
                 create table
-                    {TARGET_SCHEMA}.{TARGET_TABLE}
+                    {TARGET_SCHEMA}.
+                    {TARGET_TABLE}
                 (
                     like
-                    {TARGET_SCHEMA}.{LOAD_TABLE}
+                    {TARGET_SCHEMA}.
+                    {LOAD_TABLE}
                     including defaults
                 );
                 """
@@ -865,34 +1130,48 @@ def ensure_target_structure(
         for row in connection.execute(
             text(
                 """
-                select column_name
-                from information_schema.columns
-                where table_schema = :schema_name
-                  and table_name = :table_name;
+                select
+                    column_name
+                from
+                    information_schema.columns
+                where
+                    table_schema =
+                        :schema_name
+                    and table_name =
+                        :table_name;
                 """
             ),
             {
-                "schema_name": TARGET_SCHEMA,
-                "table_name": TARGET_TABLE,
+                "schema_name": (
+                    TARGET_SCHEMA
+                ),
+                "table_name": (
+                    TARGET_TABLE
+                ),
             },
         )
     }
 
     for column in df.columns:
-        validate_identifier(column)
+        validate_identifier(
+            column
+        )
 
         if column in current_columns:
             continue
 
-        sql_type = postgres_type_for_column(
-            column
+        sql_type = (
+            postgres_type_for_column(
+                column
+            )
         )
 
         connection.execute(
             text(
                 f"""
                 alter table
-                    {TARGET_SCHEMA}.{TARGET_TABLE}
+                    {TARGET_SCHEMA}.
+                    {TARGET_TABLE}
                 add column
                     {quote_identifier(column)}
                     {sql_type};
@@ -908,60 +1187,84 @@ def ensure_primary_key_and_indexes(
         text(
             f"""
             alter table
-                {TARGET_SCHEMA}.{TARGET_TABLE}
-            alter column id_offre
+                {TARGET_SCHEMA}.
+                {TARGET_TABLE}
+            alter column
+                id_offre
             set not null;
             """
         )
     )
 
-    primary_key_exists = connection.execute(
-        text(
-            """
-            select exists (
-                select 1
-                from pg_constraint c
-                join pg_class t
-                  on t.oid = c.conrelid
-                join pg_namespace n
-                  on n.oid = t.relnamespace
-                where
-                    n.nspname = :schema_name
-                    and t.relname = :table_name
-                    and c.contype = 'p'
-            );
-            """
-        ),
-        {
-            "schema_name": TARGET_SCHEMA,
-            "table_name": TARGET_TABLE,
-        },
-    ).scalar_one()
+    primary_key_exists = (
+        connection.execute(
+            text(
+                """
+                select exists (
+                    select 1
+                    from pg_constraint c
+
+                    join pg_class t
+                      on t.oid =
+                         c.conrelid
+
+                    join pg_namespace n
+                      on n.oid =
+                         t.relnamespace
+
+                    where
+                        n.nspname =
+                            :schema_name
+                        and t.relname =
+                            :table_name
+                        and c.contype =
+                            'p'
+                );
+                """
+            ),
+            {
+                "schema_name": (
+                    TARGET_SCHEMA
+                ),
+                "table_name": (
+                    TARGET_TABLE
+                ),
+            },
+        ).scalar_one()
+    )
 
     if not primary_key_exists:
         connection.execute(
             text(
                 f"""
                 alter table
-                    {TARGET_SCHEMA}.{TARGET_TABLE}
+                    {TARGET_SCHEMA}.
+                    {TARGET_TABLE}
                 add constraint
                     pk_{TARGET_TABLE}
-                primary key (id_offre);
+                primary key
+                    (id_offre);
                 """
             )
         )
 
     for column in INDEX_COLUMNS:
-        validate_identifier(column)
+        validate_identifier(
+            column
+        )
 
         connection.execute(
             text(
                 f"""
-                create index if not exists
+                create index
+                if not exists
                     idx_{TARGET_TABLE}_{column}
                 on
-                    {TARGET_SCHEMA}.{TARGET_TABLE}
-                    ({quote_identifier(column)});
+                    {TARGET_SCHEMA}.
+                    {TARGET_TABLE}
+                    (
+                        {quote_identifier(column)}
+                    );
                 """
             )
         )
@@ -973,7 +1276,9 @@ def replace_current_snapshot(
     context: Dict[str, str],
 ) -> None:
     quoted_columns = ", ".join(
-        quote_identifier(column)
+        quote_identifier(
+            column
+        )
         for column in df.columns
     )
 
@@ -987,7 +1292,8 @@ def replace_current_snapshot(
             text(
                 f"""
                 truncate table
-                    {TARGET_SCHEMA}.{TARGET_TABLE};
+                    {TARGET_SCHEMA}.
+                    {TARGET_TABLE};
                 """
             )
         )
@@ -996,12 +1302,16 @@ def replace_current_snapshot(
             text(
                 f"""
                 insert into
-                    {TARGET_SCHEMA}.{TARGET_TABLE}
-                    ({quoted_columns})
+                    {TARGET_SCHEMA}.
+                    {TARGET_TABLE}
+                    (
+                        {quoted_columns}
+                    )
                 select
                     {quoted_columns}
                 from
-                    {TARGET_SCHEMA}.{LOAD_TABLE};
+                    {TARGET_SCHEMA}.
+                    {LOAD_TABLE};
                 """
             )
         )
@@ -1010,58 +1320,112 @@ def replace_current_snapshot(
             connection
         )
 
-        metrics = connection.execute(
-            text(
-                f"""
-                select
-                    count(*) as row_count,
-                    count(distinct id_offre)
-                        as distinct_ids,
-                    count(*) filter (
-                        where id_offre is null
-                    ) as missing_ids,
-                    count(
-                        distinct batch_id
-                    ) as batch_count,
-                    min(batch_id)
-                        as batch_id,
-                    count(
-                        distinct processing_run_id
-                    ) as run_count,
-                    min(processing_run_id)
-                        as processing_run_id
-                from
-                    {TARGET_SCHEMA}.{TARGET_TABLE};
-                """
-            )
-        ).mappings().one()
+        metrics = (
+            connection.execute(
+                text(
+                    f"""
+                    select
+                        count(*)
+                            as row_count,
 
-        if int(metrics["row_count"]) != len(df):
+                        count(
+                            distinct id_offre
+                        )
+                            as distinct_ids,
+
+                        count(*) filter (
+                            where
+                                id_offre
+                                is null
+                        )
+                            as missing_ids,
+
+                        count(
+                            distinct batch_id
+                        )
+                            as batch_count,
+
+                        min(batch_id)
+                            as batch_id,
+
+                        count(
+                            distinct
+                            processing_run_id
+                        )
+                            as run_count,
+
+                        min(
+                            processing_run_id
+                        )
+                            as processing_run_id
+
+                    from
+                        {TARGET_SCHEMA}.
+                        {TARGET_TABLE};
+                    """
+                )
+            )
+            .mappings()
+            .one()
+        )
+
+        if (
+            int(
+                metrics[
+                    "row_count"
+                ]
+            )
+            != len(df)
+        ):
             raise ValueError(
-                "Nombre de lignes PostgreSQL "
-                "incorrect après chargement : "
+                "Nombre de lignes "
+                "PostgreSQL incorrect "
+                "après chargement : "
                 f"{metrics['row_count']} "
                 f"au lieu de {len(df)}."
             )
 
-        if int(
-            metrics["distinct_ids"]
-        ) != len(df):
-            raise ValueError(
-                "Le nombre d'IDs distincts "
-                "PostgreSQL est incorrect."
+        if (
+            int(
+                metrics[
+                    "distinct_ids"
+                ]
             )
-
-        if int(metrics["missing_ids"]) != 0:
+            != len(df)
+        ):
             raise ValueError(
-                "PostgreSQL contient des "
-                "id_offre manquants."
+                "Le nombre d'IDs "
+                "distincts PostgreSQL "
+                "est incorrect."
             )
 
         if (
-            int(metrics["batch_count"]) != 1
-            or metrics["batch_id"]
-            != context["batch_id"]
+            int(
+                metrics[
+                    "missing_ids"
+                ]
+            )
+            != 0
+        ):
+            raise ValueError(
+                "PostgreSQL contient "
+                "des id_offre manquants."
+            )
+
+        if (
+            int(
+                metrics[
+                    "batch_count"
+                ]
+            )
+            != 1
+            or
+            metrics[
+                "batch_id"
+            ]
+            != context[
+                "batch_id"
+            ]
         ):
             raise ValueError(
                 "batch_id PostgreSQL "
@@ -1069,8 +1433,14 @@ def replace_current_snapshot(
             )
 
         if (
-            int(metrics["run_count"]) != 1
-            or metrics[
+            int(
+                metrics[
+                    "run_count"
+                ]
+            )
+            != 1
+            or
+            metrics[
                 "processing_run_id"
             ]
             != context[
@@ -1078,8 +1448,8 @@ def replace_current_snapshot(
             ]
         ):
             raise ValueError(
-                "processing_run_id PostgreSQL "
-                "incohérent."
+                "processing_run_id "
+                "PostgreSQL incohérent."
             )
 
 
@@ -1091,7 +1461,8 @@ def drop_load_table(
             text(
                 f"""
                 drop table if exists
-                    {TARGET_SCHEMA}.{LOAD_TABLE};
+                    {TARGET_SCHEMA}.
+                    {LOAD_TABLE};
                 """
             )
         )
@@ -1102,8 +1473,14 @@ def load_silver_to_postgres(
 ) -> int:
     audit_run_id: int | None = None
 
-    git_commit_sha = get_git_commit_sha()
-    git_branch = get_git_branch()
+    git_commit_sha = (
+        get_git_commit_sha()
+    )
+
+    git_branch = (
+        get_git_branch()
+    )
+
     git_worktree_dirty = (
         is_git_worktree_dirty()
     )
@@ -1119,49 +1496,63 @@ def load_silver_to_postgres(
 
     print()
     print("=" * 70)
-    print("CHARGEMENT SILVER R2 -> POSTGRESQL")
+    print(
+        "CHARGEMENT SILVER R2 "
+        "-> POSTGRESQL"
+    )
     print("=" * 70)
     print()
+
     print(
-        f"Objet Silver          : "
+        "Objet Silver          : "
         f"{context['silver_object_key']}"
     )
+
     print(
-        f"Batch ID              : "
+        "Batch ID              : "
         f"{context['batch_id']}"
     )
+
     print(
-        f"Processing Run ID     : "
+        "Processing Run ID     : "
         f"{context['processing_run_id']}"
     )
+
     print(
-        f"Silver schema version : "
+        "Silver schema version : "
         f"{EXPECTED_SILVER_SCHEMA_VERSION}"
     )
+
     print(
-        f"Lignes Silver         : "
+        "Lignes Silver         : "
         f"{len(df)}"
     )
+
     print(
-        f"Colonnes Silver       : "
+        "Colonnes Silver       : "
         f"{len(df.columns)}"
     )
+
     print(
-        f"SHA-256 Silver        : "
+        "SHA-256 Silver        : "
         f"{context['silver_sha256']}"
     )
+
     print(
-        f"Git branch            : "
+        "Git branch            : "
         f"{git_branch}"
     )
+
     print(
-        f"Git commit            : "
+        "Git commit            : "
         f"{git_commit_sha}"
     )
+
     print(
-        f"Git worktree dirty    : "
+        "Git worktree dirty    : "
         f"{git_worktree_dirty}"
     )
+
     print()
 
     engine = get_postgres_engine()
@@ -1171,15 +1562,21 @@ def load_silver_to_postgres(
     )
 
     try:
-        audit_run_id = start_audit_run(
-            engine=engine,
-            context=context,
-            source_row_count=len(df),
-            git_commit_sha=git_commit_sha,
-            git_branch=git_branch,
-            git_worktree_dirty=(
-                git_worktree_dirty
-            ),
+        audit_run_id = (
+            start_audit_run(
+                engine=engine,
+                context=context,
+                source_row_count=len(df),
+                git_commit_sha=(
+                    git_commit_sha
+                ),
+                git_branch=(
+                    git_branch
+                ),
+                git_worktree_dirty=(
+                    git_worktree_dirty
+                ),
+            )
         )
 
         if is_already_loaded(
@@ -1188,10 +1585,12 @@ def load_silver_to_postgres(
             expected_rows=len(df),
         ):
             message = (
-                "Snapshot Silver déjà chargé : "
-                "aucune modification PostgreSQL "
+                "Snapshot Silver déjà "
+                "chargé : aucune "
+                "modification PostgreSQL "
                 "nécessaire. "
-                f"batch_id={context['batch_id']}, "
+                f"batch_id="
+                f"{context['batch_id']}, "
                 "processing_run_id="
                 f"{context['processing_run_id']}, "
                 f"lignes={len(df)}"
@@ -1206,14 +1605,18 @@ def load_silver_to_postgres(
             )
 
             print(
-                "[OK] Chargement idempotent : "
-                "snapshot déjà présent."
+                "[OK] Chargement "
+                "idempotent : snapshot "
+                "déjà présent."
             )
+
             print(
                 "[OK] Aucune donnée "
                 "PostgreSQL modifiée."
             )
+
             print()
+
             print(
                 "STATUT CHARGEMENT : "
                 "DÉJÀ À JOUR"
@@ -1242,14 +1645,17 @@ def load_silver_to_postgres(
         )
 
         success_message = (
-            "Chargement Silver R2 vers "
-            "PostgreSQL terminé avec succès. "
+            "Chargement Silver R2 "
+            "vers PostgreSQL terminé "
+            "avec succès. "
             f"table={TARGET_SCHEMA}."
             f"{TARGET_TABLE}, "
-            f"batch_id={context['batch_id']}, "
+            f"batch_id="
+            f"{context['batch_id']}, "
             "processing_run_id="
             f"{context['processing_run_id']}, "
-            f"lignes={len(df_postgres)}, "
+            f"lignes="
+            f"{len(df_postgres)}, "
             "source_sha256="
             f"{context['silver_sha256']}"
         )
@@ -1258,58 +1664,85 @@ def load_silver_to_postgres(
             engine=engine,
             run_id=audit_run_id,
             status="SUCCESS",
-            loaded_row_count=len(
-                df_postgres
+            loaded_row_count=(
+                len(df_postgres)
             ),
-            message=success_message,
+            message=(
+                success_message
+            ),
         )
 
         print(
-            "[OK] Silver R2 téléchargé."
+            "[OK] Silver R2 "
+            "téléchargé."
         )
+
         print(
-            "[OK] Contrat Silver validé."
+            "[OK] Contrat Silver "
+            "validé."
         )
+
         print(
-            "[OK] Table de chargement "
-            "préparée."
+            "[OK] Valeurs "
+            "semi-structurées "
+            "normalisées."
         )
+
+        print(
+            "[OK] Table de "
+            "chargement préparée."
+        )
+
         print(
             "[OK] Snapshot PostgreSQL "
             "remplacé atomiquement."
         )
+
         print(
-            "[OK] IDs PostgreSQL validés."
+            "[OK] IDs PostgreSQL "
+            "validés."
         )
+
         print(
             "[OK] batch_id PostgreSQL "
             "validé."
         )
+
         print(
             "[OK] processing_run_id "
             "PostgreSQL validé."
         )
+
         print()
+
         print(
-            f"Lignes PostgreSQL      : "
+            "Lignes PostgreSQL      : "
             f"{len(df_postgres)}"
         )
+
         print(
-            f"Table PostgreSQL       : "
-            f"{TARGET_SCHEMA}.{TARGET_TABLE}"
-        )
-        print()
-        print(
-            "STATUT CHARGEMENT : VALIDE"
+            "Table PostgreSQL       : "
+            f"{TARGET_SCHEMA}."
+            f"{TARGET_TABLE}"
         )
 
-        return len(df_postgres)
+        print()
+
+        print(
+            "STATUT CHARGEMENT : "
+            "VALIDE"
+        )
+
+        return len(
+            df_postgres
+        )
 
     except Exception as error:
         error_message = (
             "Échec du chargement "
             "Silver R2 vers PostgreSQL. "
-            f"objet={silver_object_key}, "
+            f"objet="
+            f"{silver_object_key}, "
             f"erreur={error}"
         )
 
@@ -1338,10 +1771,11 @@ def load_silver_to_postgres(
             drop_load_table(
                 engine
             )
+
         except Exception:
             logger.exception(
                 "Impossible de supprimer "
-                "la table temporaire "
+                "la table intermédiaire "
                 f"{TARGET_SCHEMA}."
                 f"{LOAD_TABLE}."
             )
@@ -1350,9 +1784,10 @@ def load_silver_to_postgres(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Charge explicitement un objet "
-            "Silver processing_v2 depuis "
-            "Cloudflare R2 vers PostgreSQL."
+            "Charge explicitement un "
+            "objet Silver processing_v2 "
+            "depuis Cloudflare R2 vers "
+            "PostgreSQL."
         )
     )
 
