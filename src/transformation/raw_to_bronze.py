@@ -1,33 +1,81 @@
+import argparse
+import hashlib
 import json
-from collections import defaultdict
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from src.storage.r2_paths import (
+    build_bronze_object_key,
+    parse_data_lake_object_key,
+)
+from src.storage.r2_storage import R2Storage
 from src.utils.logger import logger
+from src.utils.run_context import (
+    ProcessingRunContext,
+    build_processing_run_context,
+)
 
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-RAW_DIR = ROOT_DIR / "data" / "raw"
-BRONZE_DIR = ROOT_DIR / "data" / "bronze"
-BRONZE_DIR.mkdir(parents=True, exist_ok=True)
+# ============================================================
+# Configuration
+# ============================================================
+
+ROOT_DIR = (
+    Path(__file__)
+    .resolve()
+    .parents[2]
+)
 
 
-# Sous-clés connues et validées pour chaque champ dict simple.
-# Ce schéma a été établi en scannant l'ensemble du dataset (voir
-# discover_flat_dict_fields ci-dessous). À revalider périodiquement,
-# l'API pouvant faire évoluer sa structure sans préavis.
+SOURCE_NAME = "france_travail"
+
+BRONZE_SCHEMA_VERSION = "2.0.0"
+
+BRONZE_PATH_VERSION = "processing_v2"
+
+
+# ============================================================
+# Champs dictionnaires aplatis
+# ============================================================
+
 FLAT_DICT_FIELDS = {
-    "lieuTravail": ["libelle", "latitude", "longitude", "codePostal", "commune"],
-    "entreprise": ["nom", "description", "entrepriseAdaptee"],
-    "salaire": ["libelle"],
-    "origineOffre": ["origine", "urlOrigine"],
-    "contexteTravail": ["horaires"],
+    "lieuTravail": [
+        "libelle",
+        "latitude",
+        "longitude",
+        "codePostal",
+        "commune",
+    ],
+
+    "entreprise": [
+        "nom",
+        "description",
+        "entrepriseAdaptee",
+    ],
+
+    "salaire": [
+        "libelle",
+    ],
+
+    "origineOffre": [
+        "origine",
+        "urlOrigine",
+    ],
+
+    "contexteTravail": [
+        "horaires",
+    ],
 }
 
-# Champs à structure variable ou peu fiable -> conservés en JSON string
-JSON_STRING_FIELDS = [
+
+# ============================================================
+# Champs complexes conservés sous forme JSON
+# ============================================================
+
+JSON_STRING_FIELDS = {
     "competences",
     "formations",
     "langues",
@@ -35,210 +83,1509 @@ JSON_STRING_FIELDS = [
     "contact",
     "agence",
     "permis",
-]
+
+    # Liste des requêtes d'acquisition ayant trouvé l'offre.
+    "search_keywords",
+}
 
 
-def to_json_string(value: Any) -> str | None:
+# ============================================================
+# Sérialisation JSON
+# ============================================================
+
+def to_json_string(
+    value: Any,
+) -> str | None:
     """
-    Convertit une valeur complexe en chaîne JSON.
-    Conserve les listes et dictionnaires vides au lieu de les
-    transformer en None, pour ne pas perdre l'information de
-    "champ présent mais vide" vs "champ absent".
+    Convertit une structure complexe Python en chaîne JSON.
+
+    Règles :
+    - None reste None ;
+    - une chaîne reste une chaîne ;
+    - listes / dictionnaires / autres structures
+      sont sérialisés en JSON UTF-8.
     """
 
     if value is None:
         return None
 
-    return json.dumps(value, ensure_ascii=False)
+    if isinstance(
+        value,
+        str,
+    ):
+        return value
 
-
-def discover_flat_dict_fields(
-    raw_jobs: list[dict], candidate_keys: list[str]
-) -> dict[str, list[str]]:
-    """
-    Scanne l'ensemble des offres pour découvrir toutes les sous-clés
-    réellement présentes pour chaque champ dict candidat.
-
-    À utiliser en exploration pour valider/mettre à jour FLAT_DICT_FIELDS,
-    pas dans le flux de transformation courant.
-    """
-
-    discovered = defaultdict(set)
-
-    for job in raw_jobs:
-        for key in candidate_keys:
-            value = job.get(key)
-            if isinstance(value, dict):
-                discovered[key].update(value.keys())
-
-    return {key: sorted(sub_keys) for key, sub_keys in discovered.items()}
-
-
-def check_schema_drift(raw_jobs: list[dict]) -> None:
-    """
-    Compare les sous-clés réellement présentes dans le dataset avec
-    celles définies dans FLAT_DICT_FIELDS, et logue un avertissement
-    si des sous-clés inconnues apparaissent (schema drift).
-
-    Ne bloque pas le pipeline : les données restent accessibles via
-    raw_record même si une sous-clé n'est pas encore aplatie.
-    """
-
-    actual_fields = discover_flat_dict_fields(
-        raw_jobs, candidate_keys=list(FLAT_DICT_FIELDS.keys())
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        default=str,
+        separators=(
+            ",",
+            ":",
+        ),
     )
 
-    for key, expected_sub_keys in FLAT_DICT_FIELDS.items():
-        actual_sub_keys = set(actual_fields.get(key, []))
-        expected_set = set(expected_sub_keys)
 
-        unknown_sub_keys = actual_sub_keys - expected_set
+# ============================================================
+# Contrôle de la structure Raw
+# ============================================================
 
-        if unknown_sub_keys:
-            logger.warning(
-                f"Schema drift détecté sur '{key}' : sous-clés non "
-                f"aplaties trouvées {sorted(unknown_sub_keys)}. "
-                f"Elles restent accessibles via raw_record. "
-                f"Pensez à mettre à jour FLAT_DICT_FIELDS."
+def validate_raw_records(
+    jobs: list[dict[str, Any]],
+) -> None:
+    """
+    Vérifie les préconditions minimales avant transformation.
+
+    Le Raw quality check existe déjà, mais la transformation
+    ne doit pas supposer aveuglément que sa source est valide.
+    """
+
+    if not jobs:
+        raise RuntimeError(
+            "Le dataset Raw est vide."
+        )
+
+    invalid_records = [
+        index
+        for index, job
+        in enumerate(jobs)
+        if not isinstance(
+            job,
+            dict,
+        )
+    ]
+
+    if invalid_records:
+        raise RuntimeError(
+            f"{len(invalid_records)} "
+            "enregistrement(s) Raw "
+            "ne sont pas des objets JSON."
+        )
+
+    missing_ids = []
+
+    ids = []
+
+    for index, job in enumerate(
+        jobs
+    ):
+
+        job_id = job.get(
+            "id"
+        )
+
+        if (
+            job_id is None
+            or str(
+                job_id
+            ).strip()
+            == ""
+        ):
+
+            missing_ids.append(
+                index
             )
 
+            continue
 
-def flatten_job(job: dict, raw_source_file: str) -> dict:
-    """
-    Transforme une offre brute France Travail en ligne Bronze.
+        ids.append(
+            str(
+                job_id
+            )
+        )
 
-    La couche Bronze :
-    - aplatit les dictionnaires simples et connus (FLAT_DICT_FIELDS) ;
-    - conserve les structures complexes/variables en JSON string ;
-    - ne nettoie pas les valeurs métier (pas de règle qualité ici) ;
-    - garantit un schéma de colonnes stable ligne à ligne ;
-    - conserve le record brut complet pour audit et traçabilité.
-    """
+    if missing_ids:
+        raise RuntimeError(
+            f"{len(missing_ids)} "
+            "offre(s) Raw sans identifiant."
+        )
 
-    flat: dict[str, Any] = {}
-
-    # 1. Initialiser les sous-colonnes attendues pour garantir un schéma stable
-    for parent_key, sub_fields in FLAT_DICT_FIELDS.items():
-        for sub_key in sub_fields:
-            flat[f"{parent_key}_{sub_key}"] = None
-
-    # 2. Initialiser les champs JSON complexes
-    for field in JSON_STRING_FIELDS:
-        flat[field] = None
-
-    # 3. Parcourir les champs réellement présents dans l'offre
-    for key, value in job.items():
-
-        if key in FLAT_DICT_FIELDS:
-            sub_dict = value if isinstance(value, dict) else {}
-
-            for sub_key in FLAT_DICT_FIELDS[key]:
-                sub_value = sub_dict.get(sub_key)
-                # Certaines sous-clés supposées "simples" (ex: horaires)
-                # sont en réalité des listes côté API. On les convertit
-                # en chaîne pour garantir un type scalaire, condition
-                # nécessaire pour tout chargement SQL/Parquet en aval.
-                if isinstance(sub_value, list):
-                    sub_value = "; ".join(
-                        str(item).strip() for item in sub_value if item is not None
-                    ) or None
-
-                flat[f"{key}_{sub_key}"] = sub_value
-
-        elif key in JSON_STRING_FIELDS:
-            flat[key] = to_json_string(value)
-
-        elif isinstance(value, (dict, list)):
-            # Sécurité : champ complexe non prévu -> conservé en JSON string
-            # plutôt que perdu silencieusement.
-            flat[key] = to_json_string(value)
-
-        else:
-            # Champ simple : str, int, bool, float, None
-            flat[key] = value
-
-    # 4. Métadonnées techniques de traçabilité
-    flat["raw_source_file"] = raw_source_file
-    flat["raw_record"] = json.dumps(job, ensure_ascii=False)
-
-    return flat
-
-
-def get_latest_raw_file() -> Path:
-    """
-    Retourne le fichier JSON raw le plus récent du dossier data/raw,
-    trié par date de modification (plus robuste qu'un tri par nom).
-    """
-
-    raw_files = sorted(
-        RAW_DIR.glob("france_travail_jobs_raw_*.json"),
-        key=lambda file: file.stat().st_mtime,
-        reverse=True,
+    duplicate_count = (
+        len(ids)
+        - len(
+            set(ids)
+        )
     )
 
-    if not raw_files:
-        raise FileNotFoundError("Aucun fichier raw trouvé dans data/raw/")
+    if duplicate_count > 0:
+        raise RuntimeError(
+            f"{duplicate_count} "
+            "doublon(s) d'ID détecté(s) "
+            "dans le Raw."
+        )
 
-    return raw_files[0]
+    invalid_search_keywords = 0
+
+    invalid_primary_keyword = 0
+
+    for job in jobs:
+
+        search_keywords = (
+            job.get(
+                "search_keywords"
+            )
+        )
+
+        search_keyword = (
+            job.get(
+                "search_keyword"
+            )
+        )
+
+        if (
+            not isinstance(
+                search_keywords,
+                list,
+            )
+            or not search_keywords
+        ):
+
+            invalid_search_keywords += 1
+
+            continue
+
+        if (
+            search_keyword
+            not in search_keywords
+        ):
+
+            invalid_primary_keyword += 1
+
+    if invalid_search_keywords > 0:
+        raise RuntimeError(
+            f"{invalid_search_keywords} "
+            "offre(s) Raw avec "
+            "search_keywords invalide."
+        )
+
+    if invalid_primary_keyword > 0:
+        raise RuntimeError(
+            f"{invalid_primary_keyword} "
+            "offre(s) où search_keyword "
+            "n'appartient pas à "
+            "search_keywords."
+        )
 
 
-def run_bronze_transformation(raw_file: Path) -> Path:
+# ============================================================
+# Détection de schema drift
+# ============================================================
+
+def discover_flat_dict_fields(
+    jobs: list[dict[str, Any]],
+) -> dict[str, set[str]]:
     """
-    Lit un fichier JSON raw et produit une table Bronze au format Parquet.
+    Découvre les sous-clés réellement présentes
+    dans les objets dictionnaires que nous aplatissons.
+
+    Cette fonction ne modifie pas le schéma Bronze.
+    Elle sert uniquement au monitoring du schema drift.
     """
+
+    discovered: dict[
+        str,
+        set[str],
+    ] = {
+        field: set()
+        for field
+        in FLAT_DICT_FIELDS
+    }
+
+    for job in jobs:
+
+        for field in (
+            FLAT_DICT_FIELDS
+        ):
+
+            value = job.get(
+                field
+            )
+
+            if value is None:
+                continue
+
+            if not isinstance(
+                value,
+                dict,
+            ):
+                raise RuntimeError(
+                    "Schema drift incompatible : "
+                    f"le champ '{field}' "
+                    "devrait être un objet JSON "
+                    f"mais contient {type(value).__name__}."
+                )
+
+            discovered[
+                field
+            ].update(
+                value.keys()
+            )
+
+    return discovered
+
+
+def check_schema_drift(
+    jobs: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """
+    Détecte les nouvelles sous-clés présentes dans les
+    dictionnaires configurés pour aplatissement.
+
+    Politique :
+
+    - changement de TYPE :
+        erreur bloquante ;
+
+    - nouvelle sous-clé additive :
+        warning non bloquant.
+
+    Les nouvelles informations restent intégralement
+    disponibles dans raw_record, donc aucune donnée
+    source n'est perdue silencieusement.
+    """
+
+    discovered = (
+        discover_flat_dict_fields(
+            jobs
+        )
+    )
+
+    drift: dict[
+        str,
+        list[str],
+    ] = {}
+
+    for field, actual_keys in (
+        discovered.items()
+    ):
+
+        expected_keys = set(
+            FLAT_DICT_FIELDS[
+                field
+            ]
+        )
+
+        unexpected_keys = sorted(
+            actual_keys
+            - expected_keys
+        )
+
+        if unexpected_keys:
+
+            drift[
+                field
+            ] = unexpected_keys
+
+            logger.warning(
+                "Schema drift additif détecté "
+                f"sur '{field}' : "
+                f"{unexpected_keys}. "
+                "Ces champs restent préservés "
+                "dans raw_record."
+            )
+
+    return drift
+
+
+# ============================================================
+# Aplatissement d'une offre
+# ============================================================
+
+def flatten_job(
+    job: dict[str, Any],
+    raw_source_file: str,
+    raw_source_object_key: str,
+    batch_id: str,
+    processing_run_id: str,
+) -> dict[str, Any]:
+    """
+    Transforme une offre Raw en enregistrement Bronze.
+
+    Principes :
+    - primitives conservées ;
+    - dictionnaires configurés aplatis ;
+    - structures complexes configurées sérialisées ;
+    - structures complexes non configurées également
+      sérialisées pour éviter une perte ;
+    - raw_record conserve l'enregistrement Raw complet ;
+    - lineage technique ajouté.
+    """
+
+    flattened: dict[
+        str,
+        Any,
+    ] = {}
+
+    # --------------------------------------------------------
+    # Initialisation des colonnes aplaties
+    # --------------------------------------------------------
+    #
+    # Cela garantit un schéma stable même lorsqu'un
+    # dictionnaire est absent sur une offre.
+    #
+    # --------------------------------------------------------
+
+    for field, nested_fields in (
+        FLAT_DICT_FIELDS.items()
+    ):
+
+        for nested_field in (
+            nested_fields
+        ):
+
+            flattened[
+                f"{field}_{nested_field}"
+            ] = None
+
+    # --------------------------------------------------------
+    # Parcours de l'enregistrement Raw
+    # --------------------------------------------------------
+
+    for key, value in (
+        job.items()
+    ):
+
+        # ----------------------------------------------------
+        # Dictionnaires explicitement aplatis
+        # ----------------------------------------------------
+
+        if key in FLAT_DICT_FIELDS:
+
+            if value is None:
+                continue
+
+            if not isinstance(
+                value,
+                dict,
+            ):
+                raise RuntimeError(
+                    f"Le champ '{key}' "
+                    "n'a pas le type dict attendu."
+                )
+
+            for nested_field in (
+                FLAT_DICT_FIELDS[
+                    key
+                ]
+            ):
+
+                flattened[
+                    f"{key}_{nested_field}"
+                ] = (
+                    value.get(
+                        nested_field
+                    )
+                )
+
+            continue
+
+        # ----------------------------------------------------
+        # Champs explicitement conservés en JSON string
+        # ----------------------------------------------------
+
+        if key in JSON_STRING_FIELDS:
+
+            flattened[
+                key
+            ] = to_json_string(
+                value
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # Structures complexes non configurées
+        # ----------------------------------------------------
+        #
+        # On ne les abandonne jamais silencieusement.
+        #
+        # ----------------------------------------------------
+
+        if isinstance(
+            value,
+            (
+                dict,
+                list,
+                tuple,
+                set,
+            ),
+        ):
+
+            flattened[
+                key
+            ] = to_json_string(
+                value
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # Valeurs scalaires
+        # ----------------------------------------------------
+
+        flattened[
+            key
+        ] = value
+
+    # --------------------------------------------------------
+    # Colonnes techniques de lineage
+    # --------------------------------------------------------
+
+    flattened[
+        "batch_id"
+    ] = batch_id
+
+    flattened[
+        "processing_run_id"
+    ] = processing_run_id
+
+    flattened[
+        "bronze_schema_version"
+    ] = BRONZE_SCHEMA_VERSION
+
+    flattened[
+        "raw_source_file"
+    ] = raw_source_file
+
+    flattened[
+        "raw_source_object_key"
+    ] = raw_source_object_key
+
+    # --------------------------------------------------------
+    # Copie complète de l'enregistrement source
+    # --------------------------------------------------------
+
+    flattened[
+        "raw_record"
+    ] = json.dumps(
+        job,
+        ensure_ascii=False,
+        default=str,
+        separators=(
+            ",",
+            ":",
+        ),
+    )
+
+    return flattened
+
+
+# ============================================================
+# Contrôle de non-perte
+# ============================================================
+
+def validate_transformation_integrity(
+    raw_jobs: list[dict[str, Any]],
+    bronze_df: pd.DataFrame,
+) -> None:
+    """
+    Garantit que Raw -> Bronze ne perd aucune offre.
+
+    Vérifie :
+    - même nombre de lignes ;
+    - aucun ID manquant ;
+    - aucun doublon ;
+    - ensemble d'IDs strictement identique.
+    """
+
+    if (
+        len(raw_jobs)
+        != len(bronze_df)
+    ):
+
+        raise RuntimeError(
+            "Perte de lignes Raw -> Bronze : "
+            f"Raw={len(raw_jobs)}, "
+            f"Bronze={len(bronze_df)}."
+        )
+
+    if (
+        "id"
+        not in bronze_df.columns
+    ):
+
+        raise RuntimeError(
+            "La colonne id est absente "
+            "du Bronze."
+        )
+
+    bronze_missing_ids = int(
+        (
+            bronze_df[
+                "id"
+            ]
+            .isna()
+            |
+            bronze_df[
+                "id"
+            ]
+            .astype(str)
+            .str.strip()
+            .eq("")
+        )
+        .sum()
+    )
+
+    if bronze_missing_ids > 0:
+
+        raise RuntimeError(
+            f"{bronze_missing_ids} "
+            "ID manquant(s) dans Bronze."
+        )
+
+    bronze_duplicate_ids = int(
+        bronze_df[
+            "id"
+        ]
+        .astype(str)
+        .duplicated()
+        .sum()
+    )
+
+    if bronze_duplicate_ids > 0:
+
+        raise RuntimeError(
+            f"{bronze_duplicate_ids} "
+            "doublon(s) d'ID dans Bronze."
+        )
+
+    raw_ids = {
+        str(
+            job[
+                "id"
+            ]
+        )
+        for job in raw_jobs
+    }
+
+    bronze_ids = set(
+        bronze_df[
+            "id"
+        ]
+        .astype(str)
+        .tolist()
+    )
+
+    ids_missing_in_bronze = (
+        raw_ids
+        - bronze_ids
+    )
+
+    ids_unexpected_in_bronze = (
+        bronze_ids
+        - raw_ids
+    )
+
+    if ids_missing_in_bronze:
+
+        raise RuntimeError(
+            f"{len(ids_missing_in_bronze)} "
+            "ID(s) Raw absent(s) "
+            "du Bronze."
+        )
+
+    if ids_unexpected_in_bronze:
+
+        raise RuntimeError(
+            f"{len(ids_unexpected_in_bronze)} "
+            "ID(s) Bronze absent(s) "
+            "du Raw."
+        )
+
+
+# ============================================================
+# Transformation principale
+# ============================================================
+
+def run_bronze_transformation(
+    raw_object_key: str,
+    processing_run_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Transforme un snapshot Raw R2 en Bronze Parquet R2.
+
+    La fonction :
+
+    1. valide la clé Raw ;
+    2. construit le contexte d'exécution ;
+    3. valide les métadonnées Raw ;
+    4. vérifie le SHA-256 du Raw ;
+    5. transforme les enregistrements ;
+    6. garantit 0 perte ;
+    7. sérialise le Bronze en mémoire ;
+    8. écrit un nouvel artefact immutable dans R2 ;
+    9. retourne les informations nécessaires au pipeline.
+
+    processing_run_id :
+
+    - fourni :
+        réutilisé après validation ;
+
+    - absent :
+        créé automatiquement.
+
+    Airflow fournira plus tard explicitement cet ID.
+    """
+
+    logger.info(
+        "Début transformation Raw -> Bronze"
+    )
+
+    # ========================================================
+    # 1. Analyse de la clé Raw
+    # ========================================================
+
+    raw_parts = (
+        parse_data_lake_object_key(
+            raw_object_key
+        )
+    )
+
+    if (
+        raw_parts[
+            "layer"
+        ]
+        != "raw"
+    ):
+
+        raise ValueError(
+            "L'objet source doit appartenir "
+            "à la couche Raw."
+        )
+
+    source = str(
+        raw_parts[
+            "source"
+        ]
+    )
+
+    ingestion_date = str(
+        raw_parts[
+            "ingestion_date"
+        ]
+    )
+
+    batch_id = str(
+        raw_parts[
+            "batch_id"
+        ]
+    )
+
+    raw_source_file = str(
+        raw_parts[
+            "filename"
+        ]
+    )
+
+    if (
+        source
+        != SOURCE_NAME
+    ):
+
+        raise RuntimeError(
+            "Source Raw inattendue : "
+            f"{source}. "
+            f"Attendu : {SOURCE_NAME}."
+        )
+
+    # ========================================================
+    # 2. Contexte d'exécution
+    # ========================================================
+
+    context: ProcessingRunContext = (
+        build_processing_run_context(
+            processing_run_id=(
+                processing_run_id
+            ),
+            repo_dir=ROOT_DIR,
+        )
+    )
+
+    resolved_processing_run_id = (
+        context.processing_run_id
+    )
+
+    logger.info(
+        "processing_run_id : "
+        f"{resolved_processing_run_id}"
+    )
+
+    logger.info(
+        "Git commit : "
+        f"{context.git_commit_sha}"
+    )
+
+    logger.info(
+        "Git worktree dirty : "
+        f"{context.git_worktree_dirty}"
+    )
+
+    # ========================================================
+    # 3. Initialisation R2
+    # ========================================================
+
+    storage = R2Storage()
+
+    if not storage.object_exists(
+        raw_object_key
+    ):
+
+        raise FileNotFoundError(
+            "Objet Raw introuvable "
+            "dans R2 : "
+            f"{raw_object_key}"
+        )
+
+    raw_info = (
+        storage.get_object_info(
+            raw_object_key
+        )
+    )
+
+    raw_metadata = (
+        raw_info.get(
+            "metadata",
+            {},
+        )
+    )
+
+    # ========================================================
+    # 4. Validation des métadonnées Raw
+    # ========================================================
+
+    if (
+        raw_metadata.get(
+            "layer"
+        )
+        != "raw"
+    ):
+
+        raise RuntimeError(
+            "Métadonnée layer Raw incorrecte."
+        )
+
+    if (
+        raw_metadata.get(
+            "source"
+        )
+        != source
+    ):
+
+        raise RuntimeError(
+            "Métadonnée source Raw incorrecte."
+        )
+
+    if (
+        raw_metadata.get(
+            "batch-id"
+        )
+        != batch_id
+    ):
+
+        raise RuntimeError(
+            "batch_id incohérent entre "
+            "le chemin Raw et ses métadonnées."
+        )
+
+    if (
+        raw_metadata.get(
+            "ingestion-date-utc"
+        )
+        != ingestion_date
+    ):
+
+        raise RuntimeError(
+            "Date d'ingestion incohérente "
+            "entre le chemin Raw "
+            "et ses métadonnées."
+        )
+
+    raw_sha256_metadata = (
+        raw_metadata.get(
+            "sha256"
+        )
+    )
+
+    if not raw_sha256_metadata:
+
+        raise RuntimeError(
+            "SHA-256 absent des métadonnées Raw."
+        )
+
+    # ========================================================
+    # 5. Téléchargement Raw
+    # ========================================================
+
+    raw_bytes = (
+        storage.download_bytes(
+            raw_object_key
+        )
+    )
+
+    if not raw_bytes:
+
+        raise RuntimeError(
+            "L'objet Raw téléchargé est vide."
+        )
+
+    if (
+        len(raw_bytes)
+        != raw_info[
+            "size_bytes"
+        ]
+    ):
+
+        raise RuntimeError(
+            "La taille de l'objet Raw téléchargé "
+            "ne correspond pas aux métadonnées R2."
+        )
+
+    # ========================================================
+    # 6. Contrôle SHA-256 Raw
+    # ========================================================
+
+    raw_sha256_calculated = (
+        hashlib.sha256(
+            raw_bytes
+        )
+        .hexdigest()
+    )
+
+    if (
+        raw_sha256_calculated
+        != raw_sha256_metadata
+    ):
+
+        raise RuntimeError(
+            "Échec du contrôle SHA-256 Raw."
+        )
+
+    # ========================================================
+    # 7. Parsing JSON Raw
+    # ========================================================
 
     try:
-        logger.info(f"Lecture du fichier brut : {raw_file}")
 
-        with open(raw_file, "r", encoding="utf-8") as file:
-            raw_jobs = json.load(file)
+        raw_jobs = json.loads(
+            raw_bytes.decode(
+                "utf-8"
+            )
+        )
 
-        if not isinstance(raw_jobs, list):
-            raise ValueError("Le fichier raw doit contenir une liste d'offres.")
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
 
-        if not raw_jobs:
-            raise ValueError("Le fichier raw est vide.")
+        raise RuntimeError(
+            "Impossible de décoder "
+            "le JSON Raw."
+        ) from exc
 
-        logger.info(f"{len(raw_jobs)} offres à transformer")
+    if not isinstance(
+        raw_jobs,
+        list,
+    ):
 
-        check_schema_drift(raw_jobs)
+        raise RuntimeError(
+            "Le contenu Raw doit être "
+            "une liste JSON."
+        )
 
-        flat_jobs = [
-            flatten_job(job=job, raw_source_file=raw_file.name)
-            for job in raw_jobs
+    # ========================================================
+    # 8. Cohérence record-count
+    # ========================================================
+
+    raw_record_count_metadata = (
+        raw_metadata.get(
+            "record-count"
+        )
+    )
+
+    if (
+        raw_record_count_metadata
+        is None
+    ):
+
+        raise RuntimeError(
+            "record-count absent "
+            "des métadonnées Raw."
+        )
+
+    try:
+
+        expected_raw_count = int(
+            raw_record_count_metadata
+        )
+
+    except ValueError as exc:
+
+        raise RuntimeError(
+            "record-count Raw "
+            "n'est pas un entier valide."
+        ) from exc
+
+    if (
+        expected_raw_count
+        != len(raw_jobs)
+    ):
+
+        raise RuntimeError(
+            "Le volume du Raw ne correspond "
+            "pas à record-count : "
+            f"metadata={expected_raw_count}, "
+            f"payload={len(raw_jobs)}."
+        )
+
+    logger.info(
+        f"{len(raw_jobs)} "
+        "offres Raw à transformer"
+    )
+
+    # ========================================================
+    # 9. Préconditions Raw
+    # ========================================================
+
+    validate_raw_records(
+        raw_jobs
+    )
+
+    # ========================================================
+    # 10. Schema drift
+    # ========================================================
+
+    schema_drift = (
+        check_schema_drift(
+            raw_jobs
+        )
+    )
+
+    schema_drift_detected = bool(
+        schema_drift
+    )
+
+    # ========================================================
+    # 11. Transformation Raw -> Bronze
+    # ========================================================
+
+    bronze_records = [
+        flatten_job(
+            job=job,
+            raw_source_file=(
+                raw_source_file
+            ),
+            raw_source_object_key=(
+                raw_object_key
+            ),
+            batch_id=(
+                batch_id
+            ),
+            processing_run_id=(
+                resolved_processing_run_id
+            ),
+        )
+        for job in raw_jobs
+    ]
+
+    bronze_df = pd.DataFrame(
+        bronze_records
+    )
+
+    # ========================================================
+    # 12. Garantie stricte de non-perte
+    # ========================================================
+
+    validate_transformation_integrity(
+        raw_jobs=raw_jobs,
+        bronze_df=bronze_df,
+    )
+
+    logger.info(
+        "Garantie de non-perte validée : "
+        f"{len(raw_jobs)} Raw -> "
+        f"{len(bronze_df)} Bronze"
+    )
+
+    # ========================================================
+    # 13. Construction de la clé Bronze v2
+    # ========================================================
+
+    bronze_object_key = (
+        build_bronze_object_key(
+            source=source,
+            batch_id=batch_id,
+            ingestion_date=(
+                ingestion_date
+            ),
+            processing_run_id=(
+                resolved_processing_run_id
+            ),
+            filename="offres.parquet",
+        )
+    )
+
+    parsed_bronze_key = (
+        parse_data_lake_object_key(
+            bronze_object_key
+        )
+    )
+
+    if (
+        parsed_bronze_key[
+            "path_version"
         ]
+        != BRONZE_PATH_VERSION
+    ):
 
-        df = pd.DataFrame(flat_jobs)
-
-        logger.info(
-            f"DataFrame Bronze créé : {df.shape[0]} lignes, {df.shape[1]} colonnes"
+        raise RuntimeError(
+            "Le chemin Bronze généré "
+            "n'utilise pas processing_v2."
         )
 
-        output_file = BRONZE_DIR / raw_file.name.replace(
-            "_raw_", "_bronze_"
-        ).replace(".json", ".parquet")
+    # ========================================================
+    # 14. Sérialisation Parquet en mémoire
+    # ========================================================
 
-        df.to_parquet(output_file, index=False)
+    parquet_buffer = BytesIO()
 
-        logger.info(f"Fichier Bronze sauvegardé : {output_file}")
+    bronze_df.to_parquet(
+        parquet_buffer,
+        index=False,
+        engine="pyarrow",
+    )
 
-        print(
-            f"Transformation Bronze terminée : "
-            f"{df.shape[0]} lignes, {df.shape[1]} colonnes"
+    bronze_bytes = (
+        parquet_buffer.getvalue()
+    )
+
+    if not bronze_bytes:
+
+        raise RuntimeError(
+            "La sérialisation Bronze "
+            "a produit un fichier vide."
         )
-        print(f"Fichier créé : {output_file}")
 
-        return output_file
+    # ========================================================
+    # 15. Métadonnées Bronze
+    # ========================================================
 
-    except (json.JSONDecodeError, ValueError) as data_error:
-        logger.exception(f"Erreur de données dans le fichier raw : {data_error}")
-        raise
+    bronze_metadata = {
+        # ----------------------------------------------------
+        # Identité
+        # ----------------------------------------------------
+        "layer": "bronze",
+        "source": source,
 
-    except Exception as error:
-        logger.exception(f"Erreur inattendue lors de la transformation Bronze : {error}")
-        raise
+        # ----------------------------------------------------
+        # Dataset
+        # ----------------------------------------------------
+        "batch-id": batch_id,
+        "ingestion-date-utc": (
+            ingestion_date
+        ),
+
+        # ----------------------------------------------------
+        # Contrat
+        # ----------------------------------------------------
+        "schema-version": (
+            BRONZE_SCHEMA_VERSION
+        ),
+        "path-version": (
+            BRONZE_PATH_VERSION
+        ),
+
+        # ----------------------------------------------------
+        # Volume
+        # ----------------------------------------------------
+        "record-count": str(
+            len(
+                bronze_df
+            )
+        ),
+        "column-count": str(
+            bronze_df.shape[
+                1
+            ]
+        ),
+
+        # ----------------------------------------------------
+        # Lineage parent générique
+        # ----------------------------------------------------
+        "parent-layer": "raw",
+        "parent-object-key": (
+            raw_object_key
+        ),
+        "parent-sha256": (
+            raw_sha256_calculated
+        ),
+
+        # ----------------------------------------------------
+        # Compatibilité explicite Raw
+        # ----------------------------------------------------
+        "raw-object-key": (
+            raw_object_key
+        ),
+        "raw-sha256": (
+            raw_sha256_calculated
+        ),
+
+        # ----------------------------------------------------
+        # Schema drift
+        # ----------------------------------------------------
+        "schema-drift-detected": (
+            str(
+                schema_drift_detected
+            )
+            .lower()
+        ),
+        "schema-drift-field-count": str(
+            len(
+                schema_drift
+            )
+        ),
+    }
+
+    # --------------------------------------------------------
+    # Provenance d'exécution / Git
+    # --------------------------------------------------------
+
+    bronze_metadata.update(
+        context.to_r2_metadata()
+    )
+
+    # ========================================================
+    # 16. Protection contre un écrasement
+    # ========================================================
+
+    if storage.object_exists(
+        bronze_object_key
+    ):
+
+        raise RuntimeError(
+            "L'objet Bronze existe déjà. "
+            "Un processing_run_id doit identifier "
+            "une exécution unique : "
+            f"{bronze_object_key}"
+        )
+
+    # ========================================================
+    # 17. Upload R2
+    # ========================================================
+
+    upload_result = (
+        storage.upload_bytes(
+            object_key=(
+                bronze_object_key
+            ),
+            data=bronze_bytes,
+            content_type=(
+                "application/vnd.apache.parquet"
+            ),
+            metadata=(
+                bronze_metadata
+            ),
+            overwrite=False,
+        )
+    )
+
+    # ========================================================
+    # 18. Validation post-upload
+    # ========================================================
+
+    if not storage.object_exists(
+        bronze_object_key
+    ):
+
+        raise RuntimeError(
+            "Le Bronze n'est pas accessible "
+            "dans R2 après upload."
+        )
+
+    bronze_info_after_upload = (
+        storage.get_object_info(
+            bronze_object_key
+        )
+    )
+
+    uploaded_metadata = (
+        bronze_info_after_upload.get(
+            "metadata",
+            {},
+        )
+    )
+
+    if (
+        uploaded_metadata.get(
+            "processing-run-id"
+        )
+        != resolved_processing_run_id
+    ):
+
+        raise RuntimeError(
+            "processing_run_id absent "
+            "ou incohérent après upload."
+        )
+
+    if (
+        uploaded_metadata.get(
+            "schema-version"
+        )
+        != BRONZE_SCHEMA_VERSION
+    ):
+
+        raise RuntimeError(
+            "schema_version Bronze absent "
+            "ou incohérent après upload."
+        )
+
+    # ========================================================
+    # 19. Résumé terminal
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print(
+        "TRANSFORMATION RAW -> BRONZE TERMINÉE"
+    )
+    print("=" * 70)
+    print()
+
+    print(
+        f"Batch ID              : "
+        f"{batch_id}"
+    )
+
+    print(
+        f"Processing Run ID     : "
+        f"{resolved_processing_run_id}"
+    )
+
+    print(
+        f"Schema version        : "
+        f"{BRONZE_SCHEMA_VERSION}"
+    )
+
+    print(
+        f"Path version          : "
+        f"{BRONZE_PATH_VERSION}"
+    )
+
+    print(
+        f"Lignes Raw            : "
+        f"{len(raw_jobs)}"
+    )
+
+    print(
+        f"Lignes Bronze         : "
+        f"{len(bronze_df)}"
+    )
+
+    print(
+        f"IDs uniques           : "
+        f"{bronze_df['id'].nunique(dropna=True)}"
+    )
+
+    print(
+        f"Colonnes Bronze       : "
+        f"{bronze_df.shape[1]}"
+    )
+
+    print(
+        f"Schema drift détecté  : "
+        f"{schema_drift_detected}"
+    )
+
+    print(
+        f"Git branch            : "
+        f"{context.git_branch}"
+    )
+
+    print(
+        f"Git commit            : "
+        f"{context.git_commit_sha}"
+    )
+
+    print(
+        f"Git worktree dirty    : "
+        f"{context.git_worktree_dirty}"
+    )
+
+    print(
+        f"Objet Raw             : "
+        f"{raw_object_key}"
+    )
+
+    print(
+        f"Objet Bronze          : "
+        f"{bronze_object_key}"
+    )
+
+    print(
+        f"Taille Bronze         : "
+        f"{upload_result['size_bytes']} octets"
+    )
+
+    print(
+        f"SHA-256 Bronze        : "
+        f"{upload_result['sha256']}"
+    )
+
+    print()
+
+    # ========================================================
+    # 20. Résultat pipeline
+    # ========================================================
+
+    return {
+        "batch_id": (
+            batch_id
+        ),
+
+        "processing_run_id": (
+            resolved_processing_run_id
+        ),
+
+        "source": (
+            source
+        ),
+
+        "ingestion_date": (
+            ingestion_date
+        ),
+
+        "schema_version": (
+            BRONZE_SCHEMA_VERSION
+        ),
+
+        "path_version": (
+            BRONZE_PATH_VERSION
+        ),
+
+        "raw_object_key": (
+            raw_object_key
+        ),
+
+        "raw_sha256": (
+            raw_sha256_calculated
+        ),
+
+        "bronze_object_key": (
+            bronze_object_key
+        ),
+
+        "nombre_lignes_raw": (
+            len(
+                raw_jobs
+            )
+        ),
+
+        "nombre_lignes_bronze": (
+            len(
+                bronze_df
+            )
+        ),
+
+        "nombre_colonnes_bronze": (
+            bronze_df.shape[
+                1
+            ]
+        ),
+
+        "schema_drift_detected": (
+            schema_drift_detected
+        ),
+
+        "schema_drift": (
+            schema_drift
+        ),
+
+        "git_commit_sha": (
+            context.git_commit_sha
+        ),
+
+        "git_worktree_dirty": (
+            context.git_worktree_dirty
+        ),
+
+        "git_branch": (
+            context.git_branch
+        ),
+
+        "processing_started_at_utc": (
+            context.processing_started_at_utc
+        ),
+
+        "size_bytes": (
+            upload_result[
+                "size_bytes"
+            ]
+        ),
+
+        "sha256": (
+            upload_result[
+                "sha256"
+            ]
+        ),
+    }
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def main() -> None:
+    """
+    Point d'entrée CLI.
+
+    En développement :
+
+        --processing-run-id peut être omis.
+        Un nouvel UUID sera créé.
+
+    Avec Airflow :
+
+        --processing-run-id sera fourni explicitement
+        afin de propager le même contexte d'exécution.
+    """
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Transformation d'un snapshot Raw "
+            "France Travail stocké dans Cloudflare R2 "
+            "vers Bronze Parquet R2."
+        )
+    )
+
+    parser.add_argument(
+        "--raw-object-key",
+        required=True,
+        help=(
+            "Clé de l'objet Raw "
+            "dans Cloudflare R2."
+        ),
+    )
+
+    parser.add_argument(
+        "--processing-run-id",
+        required=False,
+        default=None,
+        help=(
+            "UUID de l'exécution logique du pipeline. "
+            "S'il est absent, un nouvel UUID est généré."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    run_bronze_transformation(
+        raw_object_key=(
+            args.raw_object_key
+        ),
+        processing_run_id=(
+            args.processing_run_id
+        ),
+    )
 
 
 if __name__ == "__main__":
-    latest_file = get_latest_raw_file()
-    run_bronze_transformation(latest_file)
+    main()
