@@ -1,66 +1,83 @@
-# Validation Silver PostgreSQL
+# Validation Silver R2 → PostgreSQL
 
 ## Statut global
 
 **Statut : VALIDE**
 
-## Source contrôlée
+## Source Silver R2
 
-- Fichier Silver Parquet : `france_travail_jobs_silver_2026-08-16_21-21-28.parquet`
-- Table PostgreSQL : `silver.france_travail_offres`
-- Date du rapport : `2026-08-16T22:19:39.599055+00:00`
+- Objet : `silver/france_travail/ingestion_date=2026-10-05/batch_id=ead60f51-e84c-4078-a840-40039a81cc7b/processing_run_id=d3d7f430-ccae-45e3-a997-6c45913049a0/offres.parquet`
+- Batch ID : `ead60f51-e84c-4078-a840-40039a81cc7b`
+- Processing Run ID : `d3d7f430-ccae-45e3-a997-6c45913049a0`
+- SHA-256 : `b84b3011759dd51b8a6d2123cfad68b7b87fdbca9e4835401991e1fcf6ccffae`
+- Schema version : `2.0.0`
+- Lignes : `889`
+- Colonnes : `70`
 
-## Résumé des volumes
+## PostgreSQL
 
-| Indicateur | Parquet | PostgreSQL |
-|---|---:|---:|
-| Nombre de lignes | 971 | 971 |
-| Nombre de colonnes | 61 | 64 |
-| ID distincts | 971 | 971 |
-| ID manquants | 0 | 0 |
-| Doublons ID | 0 | 0 |
+- Table : `silver.france_travail_offres`
+- Lignes : `889`
+- IDs distincts : `889`
+- Batch ID : `ead60f51-e84c-4078-a840-40039a81cc7b`
+- Processing Run ID : `d3d7f430-ccae-45e3-a997-6c45913049a0`
 
-## Contrôles de validation
+## Comparaison du schéma
+
+- Colonnes Silver R2 : `70`
+- Colonnes PostgreSQL : `72`
+- Colonnes attendues PostgreSQL : `72`
+- Colonnes absentes : `[]`
+- Colonnes inattendues : `[]`
+
+## Comparaison du contenu
+
+- Contenu identique : `True`
+- Lignes comparées : `889`
+- Lignes différentes : `0`
+
+## Contrôles
 
 | Contrôle | Résultat |
 |---|---|
+| silver_non_vide | ✅ |
 | nombre_lignes_identique | ✅ |
-| id_offre_manquants_parquet_zero | ✅ |
-| id_offre_manquants_postgresql_zero | ✅ |
-| doublons_id_offre_parquet_zero | ✅ |
-| doublons_id_offre_postgresql_zero | ✅ |
-| ids_identiques | ✅ |
-| schema_colonnes_valide | ✅ |
-| batch_unique | ✅ |
-| audit_latest_success | ✅ |
+| ids_distincts_identiques | ✅ |
+| ids_postgresql_non_nuls | ✅ |
+| ids_postgresql_non_dupliques | ✅ |
+| ensembles_ids_identiques | ✅ |
+| schema_postgresql_valide | ✅ |
+| batch_unique_postgresql | ✅ |
+| batch_id_identique | ✅ |
+| processing_run_unique_postgresql | ✅ |
+| processing_run_id_identique | ✅ |
+| silver_schema_version_unique | ✅ |
+| silver_schema_version_identique | ✅ |
+| source_silver_unique_postgresql | ✅ |
+| source_silver_identique | ✅ |
+| date_chargement_non_nulle | ✅ |
+| date_chargement_unique | ✅ |
+| contenu_silver_postgresql_identique | ✅ |
+| audit_present | ✅ |
+| audit_success | ✅ |
+| audit_batch_id_identique | ✅ |
+| audit_processing_run_identique | ✅ |
+| audit_source_object_identique | ✅ |
+| audit_sha256_identique | ✅ |
+| audit_volume_source_identique | ✅ |
+| audit_volume_charge_identique | ✅ |
+| audit_schema_version_identique | ✅ |
+| audit_git_commit_present | ✅ |
+| audit_git_branch_presente | ✅ |
+| audit_git_worktree_clean | ✅ |
+| table_intermediaire_absente | ✅ |
 
-## Comparaison des identifiants
+## Audit du chargement
 
-- IDs identiques : `True`
-- IDs absents dans PostgreSQL : `0`
-- IDs en trop dans PostgreSQL : `0`
-
-## Comparaison des colonnes
-
-- Colonnes Parquet : `61`
-- Colonnes PostgreSQL : `64`
-- Colonnes absentes dans PostgreSQL : `[]`
-- Colonnes en plus dans PostgreSQL : `['batch_id', 'date_chargement', 'fichier_source_silver']`
-- Colonnes en plus non attendues : `[]`
-
-## Batch chargé
-
-- Fichier source Silver : `france_travail_jobs_silver_2026-08-16_21-21-28.parquet`
-- Batch ID : `7903a03b-4118-4251-be45-746129f72cbb`
-- Nombre de lignes : `971`
-- Première date de chargement : `2026-08-16T21:40:55.763781+00:00`
-- Dernière date de chargement : `2026-08-16T21:40:55.763781+00:00`
-
-## Dernier run d'audit
-
-- Run ID : `3`
-- Pipeline : `load_silver_to_postgres`
+- Run ID : `6`
 - Statut : `SUCCESS`
-- Début : `2026-08-16T21:40:55.483380+00:00`
-- Fin : `2026-08-16T21:40:57.129281+00:00`
-- Message : `Chargement Silver terminé avec succès. Table=silver.france_travail_offres, fichier=france_travail_jobs_silver_2026-08-16_21-21-28.parquet, lignes=971, colonnes=64, batch_id=7903a03b-4118-4251-be45-746129f72cbb`
+- Git commit : `da03b94f80636ed72f9a3300731100950725df0a`
+- Git branch : `main`
+- Git worktree dirty : `False`
+- Source rows : `889`
+- Loaded rows : `889`
