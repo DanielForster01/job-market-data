@@ -10,13 +10,14 @@
 --   - annualiser les salaires mensuels ;
 --   - ne pas annualiser les salaires horaires sans hypothèse
 --     métier supplémentaire ;
+--   - accepter les commentaires libres ajoutés après le salaire ;
 --   - détecter les valeurs atypiques ;
 --   - conserver les anomalies plutôt que les corriger
 --     silencieusement ;
 --   - identifier explicitement les salaires exploitables
 --     pour les futurs KPI.
 --
--- Formats identifiés lors du profiling :
+-- Formats pris en charge :
 --
 --   Annuel de X Euros
 --   Annuel de X Euros à Y Euros
@@ -28,19 +29,30 @@
 --   Mensuel de X Euros sur Z mois
 --   Mensuel de X Euros à Y Euros sur Z mois
 --
---   Horaire de X Euros à Y Euros sur Z mois
+--   Horaire de X Euros
+--   Horaire de X Euros à Y Euros
+--
+-- Les mêmes formats peuvent être suivis d'un commentaire libre :
+--
+--   Annuel de X Euros à Y Euros - Selon profil
+--   Mensuel de X Euros - Prime mensuelle
+--   Horaire de X Euros à Y Euros - Primes, CSE
+--
+-- Le commentaire n'est PAS utilisé pour modifier automatiquement
+-- le montant du salaire.
+--
+-- Le salaire_libelle original est conservé intégralement pour
+-- assurer la traçabilité.
 --
 -- Les salaires horaires ne sont volontairement pas annualisés :
 -- une conversion nécessiterait une hypothèse sur le nombre
 -- d'heures travaillées annuellement.
 --
--- Le seuil de 200 000 EUR est un seuil de contrôle qualité
--- spécifique au batch actuellement analysé.
+-- Le seuil de 200 000 EUR est actuellement utilisé comme contrôle
+-- qualité pour identifier les valeurs annualisées atypiques.
 --
--- Il ne constitue pas une règle générale sur le marché du travail.
--- Il permet ici d'isoler les valeurs atypiques observées lors
--- du profiling, tout en conservant les hauts salaires cohérents
--- présents dans les données.
+-- Une valeur suspecte est conservée dans le modèle mais exclue
+-- des KPI nécessitant un salaire exploitable.
 -- ============================================================
 
 
@@ -70,7 +82,10 @@ offres as (
         periode_salaire,
         periode_salaire_normalisee,
 
+        -- Traçabilité du snapshot
         batch_id,
+        processing_run_id,
+        silver_schema_version,
         fichier_source_silver,
         date_chargement
 
@@ -86,10 +101,21 @@ matches as (
     select
         offres.*,
 
+        -- ========================================================
+        -- Parsing du noyau structuré du salaire
+        --
+        -- Le suffixe :
+        --
+        --     - commentaire libre
+        --
+        -- est volontairement accepté mais n'intervient pas dans
+        -- le calcul du salaire.
+        -- ========================================================
+
         regexp_match(
             trim(salaire_libelle),
 
-            '^(Annuel|Mensuel|Horaire)\s+de\s+([0-9]+\.?[0-9]*)\s+Euros(?:\s+à\s+([0-9]+\.?[0-9]*)\s+Euros)?(?:\s+sur\s+([0-9]+\.?[0-9]*)\s+mois)?$'
+            '^(Annuel|Mensuel|Horaire)\s+de\s+([0-9]+\.?[0-9]*)\s+Euros(?:\s+à\s+([0-9]+\.?[0-9]*)\s+Euros)?(?:\s+sur\s+([0-9]+\.?[0-9]*)\s+mois)?(?:\s+-\s+.*)?$'
 
         ) as regex_match
 
@@ -116,7 +142,10 @@ extraits as (
         periode_salaire,
         periode_salaire_normalisee,
 
+        -- Traçabilité du snapshot
         batch_id,
+        processing_run_id,
+        silver_schema_version,
         fichier_source_silver,
         date_chargement,
 
@@ -126,6 +155,7 @@ extraits as (
         case
             when regex_match is not null
                 then true
+
             else false
         end as salaire_parse_ok,
 
@@ -156,16 +186,22 @@ salaires_prepares as (
     select
         *,
 
+        -- ========================================================
         -- Pour un montant unique :
+        --
         -- salaire_min_brut = salaire_max_brut
+        -- ========================================================
+
         case
             when salaire_min_brut is not null
                 then coalesce(
                     salaire_max_brut_extrait,
                     salaire_min_brut
                 )
+
             else null
         end as salaire_max_brut,
+
 
         case
             when salaire_parse_ok is false
@@ -177,8 +213,14 @@ salaires_prepares as (
             else 'Fourchette'
         end as format_salaire,
 
-        -- Contrôle entre la période contenue dans le texte
-        -- et celle déjà normalisée dans l'intermediate principal.
+
+        -- ========================================================
+        -- Cohérence de la période
+        --
+        -- On compare la période extraite du texte à la période
+        -- déjà normalisée dans l'intermediate principal.
+        -- ========================================================
+
         case
             when salaire_parse_ok is true
              and periode_extraite = periode_salaire_normalisee
@@ -197,9 +239,10 @@ annualises as (
     select
         salaires_prepares.*,
 
-        -- --------------------------------------------
+        -- ========================================================
         -- Salaire minimum annualisé
-        -- --------------------------------------------
+        -- ========================================================
+
         case
             when periode_extraite = 'Annuel'
                 then salaire_min_brut
@@ -211,9 +254,11 @@ annualises as (
             else null
         end as salaire_annuel_min,
 
-        -- --------------------------------------------
+
+        -- ========================================================
         -- Salaire maximum annualisé
-        -- --------------------------------------------
+        -- ========================================================
+
         case
             when periode_extraite = 'Annuel'
                 then salaire_max_brut
@@ -234,10 +279,13 @@ calculs as (
     select
         annualises.*,
 
-        -- Milieu de la fourchette annualisée.
+        -- ========================================================
+        -- Milieu de la fourchette annualisée
         --
-        -- Ce n'est PAS encore le salaire moyen du marché :
-        -- c'est la valeur centrale de chaque offre.
+        -- Ce n'est PAS un salaire moyen du marché.
+        -- Il s'agit de la valeur centrale de l'offre.
+        -- ========================================================
+
         case
             when salaire_annuel_min is not null
              and salaire_annuel_max is not null
@@ -252,7 +300,11 @@ calculs as (
             else null
         end as salaire_annuel_central,
 
+
+        -- ========================================================
         -- Valeur centrale avant annualisation
+        -- ========================================================
+
         case
             when salaire_min_brut is not null
              and salaire_max_brut is not null
@@ -279,24 +331,21 @@ qualification as (
 
         parametres.seuil_salaire_annuel_suspect,
 
-        -- =====================================================
+
+        -- ========================================================
         -- Détection des salaires atypiques
-        -- =====================================================
         --
-        -- L'anomalie est contrôlée APRES annualisation.
+        -- Le contrôle est réalisé APRÈS annualisation.
         --
-        -- Cela permet avec une seule règle de détecter :
+        -- Exemple :
         --
-        --   Annuel 40 000 -> 440 000
+        --   Mensuel 45 000 EUR
+        --       -> 540 000 EUR annualisés
+        --       -> valeur suspecte
         --
-        -- mais aussi :
-        --
-        --   Mensuel 30 000
-        --   -> 360 000 annuel
-        --
-        -- sans avoir besoin d'une règle spéciale différente
-        -- pour chaque périodicité.
-        --
+        -- La valeur n'est jamais corrigée automatiquement.
+        -- ========================================================
+
         case
             when salaire_annuel_max
                  > parametres.seuil_salaire_annuel_suspect
@@ -317,9 +366,10 @@ finalises as (
     select
         *,
 
-        -- =====================================================
+        -- ========================================================
         -- Salaire exploitable pour les KPI
-        -- =====================================================
+        -- ========================================================
+
         case
             when salaire_parse_ok is false
                 then false
@@ -348,9 +398,11 @@ finalises as (
             else true
         end as salaire_exploitable,
 
-        -- =====================================================
+
+        -- ========================================================
         -- Motif d'exclusion des KPI
-        -- =====================================================
+        -- ========================================================
+
         case
             when salaire_parse_ok is false
                 then 'Format salarial non reconnu'
@@ -377,9 +429,11 @@ finalises as (
             else null
         end as motif_non_exploitation,
 
-        -- =====================================================
+
+        -- ========================================================
         -- Méthode de normalisation
-        -- =====================================================
+        -- ========================================================
+
         case
             when salaire_parse_ok is false
                 then 'Non parsé'
@@ -399,6 +453,7 @@ finalises as (
     from qualification
 
 )
+
 
 select
     id_offre,
@@ -442,6 +497,8 @@ select
 
     -- Traçabilité
     batch_id,
+    processing_run_id,
+    silver_schema_version,
     fichier_source_silver,
     date_chargement
 

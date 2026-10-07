@@ -2,47 +2,242 @@ version: 2
 
 sources:
   - name: france_travail
-    description: "Tables sources issues de la couche Silver PostgreSQL."
+    description: >
+      Sources PostgreSQL alimentées à partir de la couche Silver
+      du Data Lake Cloudflare R2. La table france_travail_offres
+      représente le snapshot analytique courant validé avant
+      transformation par dbt.
+
     schema: silver
 
     tables:
       - name: france_travail_offres
-        description: "Table Silver courante des offres d'emploi France Travail, chargée depuis le fichier Parquet Silver validé."
+        description: >
+          Snapshot Silver courant des offres d'emploi France Travail.
+          Les données sont produites dans le Data Lake R2, validées par
+          les Quality Gates Python, puis chargées de manière idempotente
+          dans PostgreSQL avant leur consommation par dbt.
 
         columns:
+          # ============================================================
+          # IDENTITÉ DE L'OFFRE
+          # ============================================================
+
           - name: id_offre
-            description: "Identifiant unique de l'offre."
+            description: >
+              Identifiant unique de l'offre d'emploi fourni par
+              France Travail.
             tests:
               - not_null
               - unique
 
           - name: intitule_offre
-            description: "Titre de l'offre d'emploi."
+            description: >
+              Intitulé de l'offre d'emploi.
             tests:
               - not_null
+
+          # ============================================================
+          # DATES MÉTIER
+          # ============================================================
 
           - name: date_creation
-            description: "Date de création de l'offre."
+            description: >
+              Date de création de l'offre dans le système
+              France Travail.
             tests:
               - not_null
 
+          - name: date_actualisation
+            description: >
+              Date de dernière actualisation de l'offre chez
+              France Travail.
+
+          - name: date_actualisation_coherente
+            description: >
+              Indicateur calculé dans la couche Silver permettant
+              de vérifier la cohérence entre la date de création
+              et la date d'actualisation de l'offre.
+
+          # ============================================================
+          # CONTRAT
+          # ============================================================
+
           - name: code_type_contrat
-            description: "Code du type de contrat."
+            description: >
+              Code du type de contrat associé à l'offre.
 
           - name: libelle_type_contrat
-            description: "Libellé du type de contrat."
+            description: >
+              Libellé du type de contrat associé à l'offre.
+
+          # ============================================================
+          # MÉTIER / ROME
+          # ============================================================
 
           - name: code_rome
-            description: "Code ROME associé à l'offre."
+            description: >
+              Code ROME associé au métier de l'offre.
+
+          - name: libelle_rome
+            description: >
+              Libellé ROME associé à l'offre.
+
+          # ============================================================
+          # LOCALISATION
+          # ============================================================
+
+          - name: coordonnees_renseignees
+            description: >
+              Indique si la latitude et la longitude sont toutes
+              les deux disponibles pour l'offre.
+
+          - name: localisation_renseignee
+            description: >
+              Indique si l'offre dispose d'au moins une information
+              de localisation exploitable : libellé de lieu, commune,
+              code postal ou coordonnées GPS.
+
+          # ============================================================
+          # ENTREPRISE
+          # ============================================================
+
+          - name: information_entreprise_disponible
+            description: >
+              Indique si au moins une information exploitable sur
+              l'entreprise est disponible.
+
+          # ============================================================
+          # SALAIRE
+          # ============================================================
+
+          - name: salaire_renseigne
+            description: >
+              Indique si une information salariale est renseignée
+              pour l'offre.
+
+          - name: salaire_libelle
+            description: >
+              Information salariale textuelle telle qu'elle est
+              disponible dans les données France Travail.
+
+          - name: periode_salaire
+            description: >
+              Période salariale normalisée dans la couche Silver,
+              par exemple Annuel, Mensuel ou Horaire.
+
+          # ============================================================
+          # ACQUISITION
+          # ============================================================
 
           - name: mot_cle_recherche
-            description: "Mot-clé utilisé lors de la collecte API."
+            description: >
+              Mot-clé principal ayant permis de récupérer l'offre
+              lors de l'interrogation de l'API France Travail.
+
+          - name: mots_cles_recherche
+            description: >
+              Ensemble des mots-clés d'acquisition auxquels l'offre
+              a été associée après déduplication des résultats issus
+              des différentes requêtes API.
+
+          # ============================================================
+          # TRAÇABILITÉ DE L'INGESTION
+          # ============================================================
+
+          - name: date_ingestion
+            description: >
+              Date et heure UTC auxquelles l'offre a été collectée
+              depuis l'API France Travail.
+
+          - name: fichier_source
+            description: >
+              Nom logique du fichier Raw ayant servi de source à
+              la transformation.
+
+          - name: objet_source_raw
+            description: >
+              Clé complète de l'objet Raw Cloudflare R2 à l'origine
+              de l'enregistrement.
+
+          # ============================================================
+          # BATCH D'ACQUISITION
+          # ============================================================
 
           - name: batch_id
-            description: "Identifiant technique du chargement PostgreSQL."
+            description: >
+              Identifiant immuable du snapshot d'acquisition France
+              Travail. Il identifie les données sources collectées et
+              est propagé à travers les couches Raw, Bronze, Silver
+              et PostgreSQL.
+            tests:
+              - not_null
+
+          # ============================================================
+          # TRAÇABILITÉ BRONZE
+          # ============================================================
+
+          - name: bronze_processing_run_id
+            description: >
+              Identifiant de l'exécution de traitement ayant produit
+              la représentation Bronze de l'offre.
+            tests:
+              - not_null
+
+          - name: bronze_schema_version
+            description: >
+              Version du contrat de données Bronze appliqué à
+              l'enregistrement.
+            tests:
+              - not_null
+
+          - name: objet_source_bronze
+            description: >
+              Clé complète de l'objet Bronze Cloudflare R2 ayant
+              servi de source à la transformation Silver.
+            tests:
+              - not_null
+
+          # ============================================================
+          # TRAÇABILITÉ SILVER
+          # ============================================================
+
+          - name: processing_run_id
+            description: >
+              Identifiant de l'exécution de traitement ayant produit
+              le snapshot Silver courant. Il permet de distinguer
+              plusieurs retraitements d'un même batch d'acquisition.
+            tests:
+              - not_null
+
+          - name: silver_schema_version
+            description: >
+              Version du contrat de données appliqué lors de la
+              production de la couche Silver.
+            tests:
+              - not_null
+
+          - name: date_traitement_silver
+            description: >
+              Date et heure UTC auxquelles l'enregistrement a été
+              produit dans la couche Silver.
+            tests:
+              - not_null
+
+          # ============================================================
+          # TRAÇABILITÉ POSTGRESQL
+          # ============================================================
 
           - name: date_chargement
-            description: "Date de chargement de la ligne dans PostgreSQL."
+            description: >
+              Date et heure UTC du chargement du snapshot Silver
+              courant dans PostgreSQL.
+            tests:
+              - not_null
 
           - name: fichier_source_silver
-            description: "Nom du fichier Silver Parquet chargé dans PostgreSQL."
+            description: >
+              Clé complète de l'objet Silver Cloudflare R2 ayant
+              alimenté la table PostgreSQL.
+            tests:
+              - not_null
