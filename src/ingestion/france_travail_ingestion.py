@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import requests
 from dotenv import load_dotenv
@@ -169,7 +169,173 @@ def search_jobs_all_pages(
     return all_results
 
 
-def run_ingestion() -> dict:
+def build_reused_raw_result(
+    storage: R2Storage,
+    object_key: str,
+    batch_id: UUID,
+    ingestion_datetime: datetime,
+) -> dict:
+    """
+    Construit le résultat d'ingestion lorsqu'un Raw associé
+    au même contexte d'acquisition existe déjà.
+
+    Le Raw existant est réutilisé sans nouvel appel à
+    l'API France Travail et sans nouvelle écriture R2.
+
+    Les métadonnées R2 sont contrôlées afin d'éviter de
+    réutiliser un objet incohérent avec le batch demandé.
+    """
+
+    object_info = storage.get_object_info(
+        object_key
+    )
+
+    metadata = object_info.get(
+        "metadata",
+        {},
+    )
+
+    expected_metadata = {
+        "layer": "raw",
+        "source": "france_travail",
+        "batch-id": str(batch_id),
+        "ingestion-date-utc": (
+            ingestion_datetime
+            .date()
+            .isoformat()
+        ),
+    }
+
+    for key, expected_value in (
+        expected_metadata.items()
+    ):
+        actual_value = metadata.get(
+            key
+        )
+
+        if actual_value != expected_value:
+            raise RuntimeError(
+                "Raw R2 existant incohérent. "
+                f"Métadonnée={key}, "
+                f"attendu={expected_value}, "
+                f"obtenu={actual_value}, "
+                f"object_key={object_key}"
+            )
+
+    stored_ingestion_datetime = metadata.get(
+        "ingestion-datetime-utc"
+    )
+
+    if (
+        stored_ingestion_datetime is not None
+        and stored_ingestion_datetime
+        != ingestion_datetime.isoformat()
+    ):
+        raise RuntimeError(
+            "Raw R2 existant incohérent. "
+            "L'horodatage exact d'ingestion ne correspond pas "
+            "au contexte d'acquisition demandé. "
+            f"attendu={ingestion_datetime.isoformat()}, "
+            f"obtenu={stored_ingestion_datetime}, "
+            f"object_key={object_key}"
+        )
+
+    sha256 = metadata.get(
+        "sha256"
+    )
+
+    if (
+        not sha256
+        or len(sha256) != 64
+    ):
+        raise RuntimeError(
+            "Le Raw R2 existant ne possède pas "
+            "de SHA-256 valide dans ses métadonnées."
+        )
+
+    try:
+        nombre_offres = int(
+            metadata[
+                "record-count"
+            ]
+        )
+
+        ignored_without_id = int(
+            metadata[
+                "ignored-without-id"
+            ]
+        )
+
+        nombre_requetes = int(
+            metadata[
+                "search-query-count"
+            ]
+        )
+
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise RuntimeError(
+            "Les métadonnées du Raw R2 existant "
+            "sont incomplètes ou invalides."
+        ) from error
+
+    if nombre_requetes != len(SEARCH_QUERIES):
+        raise RuntimeError(
+            "Le Raw R2 existant a été produit avec un nombre "
+            "de requêtes d'acquisition différent de la "
+            "configuration actuelle. "
+            f"attendu={len(SEARCH_QUERIES)}, "
+            f"obtenu={nombre_requetes}, "
+            f"object_key={object_key}"
+        )
+
+    logger.info(
+        "Raw R2 déjà présent pour ce contexte "
+        "d'acquisition."
+    )
+
+    logger.info(
+        f"Réutilisation du Raw : {object_key}"
+    )
+
+    logger.info(
+        f"SHA-256 existant : {sha256}"
+    )
+
+    return {
+        "batch_id": str(
+            batch_id
+        ),
+        "ingestion_datetime_utc": (
+            ingestion_datetime
+            .isoformat()
+        ),
+        "nombre_offres": nombre_offres,
+        "ignored_without_id": (
+            ignored_without_id
+        ),
+        "nombre_requetes": nombre_requetes,
+        "statistiques_requetes": None,
+        "contribution_requetes": None,
+        "bucket": object_info[
+            "bucket"
+        ],
+        "object_key": object_key,
+        "size_bytes": object_info[
+            "size_bytes"
+        ],
+        "sha256": sha256,
+        "storage_status": "REUSED",
+    }
+
+
+def run_ingestion(
+    batch_id: UUID | str | None = None,
+    ingestion_datetime: datetime | None = None,
+) -> dict:
     """
     Lance l'ingestion des offres Data depuis l'API France Travail.
 
@@ -199,14 +365,50 @@ def run_ingestion() -> dict:
     # 1. Identité technique du batch
     # ========================================================
 
-    batch_id = uuid4()
+    # Le contexte peut être fourni explicitement par
+    # l'orchestrateur (Airflow) afin de conserver la même
+    # identité lors d'un retry.
+    #
+    # Sans paramètre, le comportement historique est conservé :
+    # le script génère lui-même son contexte d'acquisition.
 
-    ingestion_datetime = datetime.now(
-        timezone.utc
+    if batch_id is None:
+        resolved_batch_id = uuid4()
+    else:
+        try:
+            resolved_batch_id = UUID(
+                str(batch_id)
+            )
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ValueError(
+                f"batch_id invalide : {batch_id}"
+            ) from error
+
+    if ingestion_datetime is None:
+        resolved_ingestion_datetime = datetime.now(
+            timezone.utc
+        )
+    else:
+        if ingestion_datetime.tzinfo is None:
+            raise ValueError(
+                "ingestion_datetime doit être timezone-aware."
+            )
+
+        resolved_ingestion_datetime = (
+            ingestion_datetime.astimezone(
+                timezone.utc
+            )
+        )
+
+    batch_id = resolved_batch_id
+
+    ingestion_datetime = (
+        resolved_ingestion_datetime
     )
 
     # Format conservé temporairement pour rester compatible
     # avec les transformations Bronze / Silver existantes.
+
     ingestion_timestamp = (
         ingestion_datetime.strftime(
             "%Y-%m-%d_%H-%M-%S"
@@ -222,16 +424,51 @@ def run_ingestion() -> dict:
         f"{ingestion_datetime.isoformat()}"
     )
 
+    # ========================================================
+    # 2. Construction déterministe de la clé Raw R2
+    # ========================================================
+
+    object_key = build_raw_object_key(
+        source="france_travail",
+        batch_id=batch_id,
+        ingestion_datetime=(
+            ingestion_datetime
+        ),
+        filename="offres.json",
+    )
+
+    # ========================================================
+    # 3. Initialisation du stockage R2
+    # ========================================================
+
+    storage = R2Storage()
+
     try:
 
         # ====================================================
-        # 2. Authentification
+        # 4. Idempotence : réutilisation d'un Raw existant
+        # ====================================================
+
+        if storage.object_exists(
+            object_key
+        ):
+            return build_reused_raw_result(
+                storage=storage,
+                object_key=object_key,
+                batch_id=batch_id,
+                ingestion_datetime=(
+                    ingestion_datetime
+                ),
+            )
+
+        # ====================================================
+        # 5. Authentification France Travail
         # ====================================================
 
         token = get_access_token()
 
         # ====================================================
-        # 3. Structures de collecte
+        # 6. Structures de collecte
         # ====================================================
         #
         # La clé est l'identifiant France Travail.
@@ -253,7 +490,7 @@ def run_ingestion() -> dict:
         ] = {}
 
         # ====================================================
-        # 4. Exécution des requêtes d'acquisition
+        # 7. Exécution des requêtes d'acquisition
         # ====================================================
 
         for keyword in SEARCH_QUERIES:
@@ -409,7 +646,7 @@ def run_ingestion() -> dict:
             )
 
         # ====================================================
-        # 5. Construction du dataset Raw final
+        # 8. Construction du dataset Raw final
         # ====================================================
 
         all_jobs = list(
@@ -424,7 +661,7 @@ def run_ingestion() -> dict:
             )
 
         # ====================================================
-        # 6. Analyse de contribution des requêtes
+        # 9. Analyse de contribution des requêtes
         # ====================================================
 
         logger.info(
@@ -472,7 +709,7 @@ def run_ingestion() -> dict:
             )
 
         # ====================================================
-        # 7. Contrôles avant stockage
+        # 10. Contrôles avant stockage
         # ====================================================
 
         logger.info(
@@ -570,63 +807,67 @@ def run_ingestion() -> dict:
         )
 
         # ====================================================
-        # 8. Construction de la clé Raw R2
+        # 11. Upload atomique du Raw dans R2
         # ====================================================
 
-        object_key = build_raw_object_key(
-            source="france_travail",
-            batch_id=batch_id,
-            ingestion_datetime=(
-                ingestion_datetime
-            ),
-            filename="offres.json",
-        )
+        try:
 
-        # ====================================================
-        # 9. Initialisation du stockage
-        # ====================================================
-
-        storage = R2Storage()
-
-        # ====================================================
-        # 10. Upload du Raw dans R2
-        # ====================================================
-
-        resultat_upload = (
-            storage.upload_json(
-                object_key=object_key,
-                payload=all_jobs,
-                metadata={
-                    "layer": "raw",
-                    "source": (
-                        "france_travail"
-                    ),
-                    "batch-id": str(
-                        batch_id
-                    ),
-                    "ingestion-date-utc": (
-                        ingestion_datetime
-                        .date()
-                        .isoformat()
-                    ),
-                    "record-count": str(
-                        len(all_jobs)
-                    ),
-                    "ignored-without-id": str(
-                        ignored_without_id
-                    ),
-                    "search-query-count": str(
-                        len(
-                            SEARCH_QUERIES
-                        )
-                    ),
-                },
-                overwrite=False,
+            resultat_upload = (
+                storage.upload_json(
+                    object_key=object_key,
+                    payload=all_jobs,
+                    metadata={
+                        "layer": "raw",
+                        "source": (
+                            "france_travail"
+                        ),
+                        "batch-id": str(
+                            batch_id
+                        ),
+                        "ingestion-date-utc": (
+                            ingestion_datetime
+                            .date()
+                            .isoformat()
+                        ),
+                        "ingestion-datetime-utc": (
+                            ingestion_datetime
+                            .isoformat()
+                        ),
+                        "record-count": str(
+                            len(all_jobs)
+                        ),
+                        "ignored-without-id": str(
+                            ignored_without_id
+                        ),
+                        "search-query-count": str(
+                            len(
+                                SEARCH_QUERIES
+                            )
+                        ),
+                    },
+                    overwrite=False,
+                )
             )
-        )
+
+        except FileExistsError:
+
+            logger.warning(
+                "Le Raw a été créé par une autre "
+                "exécution entre le contrôle "
+                "d'existence et l'upload."
+            )
+
+            return build_reused_raw_result(
+                storage=storage,
+                object_key=object_key,
+                batch_id=batch_id,
+                ingestion_datetime=(
+                    ingestion_datetime
+                ),
+            )
 
         # ====================================================
-        # 11. Validation post-upload
+        # 12. Validation post-upload
         # ====================================================
 
         if not storage.object_exists(
@@ -649,7 +890,7 @@ def run_ingestion() -> dict:
         )
 
         # ====================================================
-        # 12. Résumé terminal
+        # 13. Résumé terminal
         # ====================================================
 
         print()
@@ -730,7 +971,7 @@ def run_ingestion() -> dict:
         print()
 
         # ====================================================
-        # 13. Métadonnées retournées au pipeline
+        # 14. Métadonnées retournées au pipeline
         # ====================================================
 
         return {
@@ -772,6 +1013,7 @@ def run_ingestion() -> dict:
                     "sha256"
                 ]
             ),
+            "storage_status": "CREATED",
         }
 
     # ========================================================
