@@ -14,7 +14,8 @@ class R2Storage:
     """
     Abstraction de stockage objet pour Cloudflare R2.
 
-    Cette classe centralise les opérations techniques liées au Data Lake :
+    Cette classe centralise les opérations techniques
+    liées au Data Lake :
     - vérification d'existence ;
     - lecture des métadonnées ;
     - écriture de bytes ;
@@ -23,13 +24,26 @@ class R2Storage:
     - lecture JSON ;
     - suppression.
 
-    Les couches métier du projet ne doivent pas manipuler directement
-    boto3 autant que possible.
+    Par défaut, les écritures utilisent une sémantique
+    create-only :
+
+        une clé absente peut être créée ;
+        une clé existante ne peut pas être remplacée.
+
+    Cette propriété protège notamment l'immutabilité
+    de la couche Raw.
+
+    Les couches métier du projet ne doivent pas manipuler
+    directement boto3 autant que possible.
     """
 
     def __init__(self) -> None:
         self.client = get_r2_client()
         self.bucket_name = get_r2_bucket_name()
+
+    # ========================================================
+    # Existence
+    # ========================================================
 
     def object_exists(
         self,
@@ -55,14 +69,28 @@ class R2Storage:
                 .get("Code")
             )
 
-            if error_code in (
-                "404",
-                "NoSuchKey",
-                "NotFound",
+            http_status = (
+                exc.response
+                .get("ResponseMetadata", {})
+                .get("HTTPStatusCode")
+            )
+
+            if (
+                error_code
+                in (
+                    "404",
+                    "NoSuchKey",
+                    "NotFound",
+                )
+                or http_status == 404
             ):
                 return False
 
             raise
+
+    # ========================================================
+    # Métadonnées
+    # ========================================================
 
     def get_object_info(
         self,
@@ -88,8 +116,14 @@ class R2Storage:
                 "ContentType"
             ),
             "etag": (
-                response.get("ETag", "")
-                .replace('"', "")
+                response.get(
+                    "ETag",
+                    "",
+                )
+                .replace(
+                    '"',
+                    "",
+                )
             ),
             "last_modified": response.get(
                 "LastModified"
@@ -99,6 +133,10 @@ class R2Storage:
                 {},
             ),
         }
+
+    # ========================================================
+    # Upload binaire
+    # ========================================================
 
     def upload_bytes(
         self,
@@ -113,20 +151,22 @@ class R2Storage:
         """
         Écrit un objet binaire dans R2.
 
-        Par défaut, refuse d'écraser un objet existant afin
-        de protéger le caractère immuable de la couche Raw.
-        """
+        Comportement par défaut :
+        create-only / immutable.
 
-        if (
-            not overwrite
-            and self.object_exists(
-                object_key
-            )
-        ):
-            raise FileExistsError(
-                f"L'objet R2 existe déjà : "
-                f"{object_key}"
-            )
+        Si overwrite=False :
+        - l'écriture utilise If-None-Match='*' ;
+        - R2 crée l'objet uniquement si la clé
+          n'existe pas ;
+        - l'opération est atomique côté stockage ;
+        - une clé existante provoque FileExistsError.
+
+        Si overwrite=True :
+        - l'appel autorise explicitement le remplacement.
+
+        overwrite=True ne doit jamais être utilisé pour
+        la couche Raw.
+        """
 
         sha256 = hashlib.sha256(
             data
@@ -141,21 +181,86 @@ class R2Storage:
                 metadata
             )
 
-        response = self.client.put_object(
-            Bucket=self.bucket_name,
-            Key=object_key,
-            Body=data,
-            ContentType=content_type,
-            Metadata=object_metadata,
-        )
+        put_parameters = {
+            "Bucket": self.bucket_name,
+            "Key": object_key,
+            "Body": data,
+            "ContentType": content_type,
+            "Metadata": object_metadata,
+        }
+
+        # ----------------------------------------------------
+        # Protection atomique create-only
+        # ----------------------------------------------------
+
+        if not overwrite:
+            put_parameters[
+                "IfNoneMatch"
+            ] = "*"
+
+        try:
+
+            response = self.client.put_object(
+                **put_parameters
+            )
+
+        except ClientError as exc:
+
+            error_code = (
+                exc.response
+                .get("Error", {})
+                .get("Code")
+            )
+
+            http_status = (
+                exc.response
+                .get("ResponseMetadata", {})
+                .get("HTTPStatusCode")
+            )
+
+            # If-None-Match='*' échoue si l'objet
+            # existe déjà.
+            if (
+                not overwrite
+                and (
+                    error_code
+                    in (
+                        "412",
+                        "PreconditionFailed",
+                    )
+                    or http_status == 412
+                )
+            ):
+
+                raise FileExistsError(
+                    "Écriture R2 refusée : "
+                    "l'objet existe déjà et "
+                    "l'écrasement est interdit. "
+                    f"Clé={object_key}"
+                ) from exc
+
+            raise
 
         return {
             "bucket": self.bucket_name,
             "object_key": object_key,
             "size_bytes": len(data),
             "sha256": sha256,
-            "etag": response.get("ETag"),
+            "etag": (
+                response.get(
+                    "ETag",
+                    "",
+                )
+                .replace(
+                    '"',
+                    "",
+                )
+            ),
         }
+
+    # ========================================================
+    # Upload JSON
+    # ========================================================
 
     def upload_json(
         self,
@@ -168,6 +273,8 @@ class R2Storage:
     ) -> dict[str, Any]:
         """
         Sérialise puis écrit un objet JSON dans R2.
+
+        Par défaut, l'écriture est create-only.
         """
 
         contenu_json = json.dumps(
@@ -187,6 +294,10 @@ class R2Storage:
             overwrite=overwrite,
         )
 
+    # ========================================================
+    # Download binaire
+    # ========================================================
+
     def download_bytes(
         self,
         object_key: str,
@@ -194,8 +305,8 @@ class R2Storage:
         """
         Télécharge un objet R2 sous forme binaire.
 
-        Cette méthode est utile notamment pour les contrôles
-        d'intégrité SHA-256.
+        Cette méthode est notamment utilisée pour
+        les contrôles d'intégrité SHA-256.
         """
 
         response = self.client.get_object(
@@ -206,6 +317,10 @@ class R2Storage:
         return response[
             "Body"
         ].read()
+
+    # ========================================================
+    # Download JSON
+    # ========================================================
 
     def download_json(
         self,
@@ -220,8 +335,14 @@ class R2Storage:
         )
 
         return json.loads(
-            contenu.decode("utf-8")
+            contenu.decode(
+                "utf-8"
+            )
         )
+
+    # ========================================================
+    # Suppression
+    # ========================================================
 
     def delete_object(
         self,
@@ -230,8 +351,11 @@ class R2Storage:
         """
         Supprime un objet R2.
 
-        Cette méthode existe pour les tests et objets techniques.
-        Elle ne doit normalement pas être utilisée sur la couche Raw.
+        Cette méthode existe uniquement pour les tests
+        et objets techniques.
+
+        Elle ne doit normalement jamais être utilisée
+        sur la couche Raw métier.
         """
 
         self.client.delete_object(
