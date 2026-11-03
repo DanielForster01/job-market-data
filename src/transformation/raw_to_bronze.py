@@ -694,6 +694,286 @@ def validate_transformation_integrity(
 
 
 # ============================================================
+# Réutilisation idempotente d'un Bronze existant
+# ============================================================
+
+def build_reused_bronze_result(
+    storage: R2Storage,
+    bronze_object_key: str,
+    raw_object_key: str,
+    raw_metadata: dict[str, str],
+    source: str,
+    batch_id: str,
+    ingestion_date: str,
+    processing_run_id: str,
+) -> dict[str, Any]:
+    """
+    Construit le résultat pipeline lorsqu'un artefact Bronze
+    existe déjà pour le même processing_run_id.
+
+    Le Bronze n'est ni régénéré ni réécrit.
+    Les métadonnées minimales d'identité, de lineage et
+    d'intégrité sont contrôlées avant réutilisation.
+
+    Le Quality Gate Bronze reste responsable de la validation
+    complète de l'artefact réutilisé.
+    """
+
+    bronze_info = storage.get_object_info(
+        bronze_object_key
+    )
+
+    bronze_metadata = bronze_info.get(
+        "metadata",
+        {},
+    )
+
+    expected_metadata = {
+        "layer": "bronze",
+        "source": source,
+        "batch-id": batch_id,
+        "ingestion-date-utc": ingestion_date,
+        "processing-run-id": processing_run_id,
+        "schema-version": BRONZE_SCHEMA_VERSION,
+        "path-version": BRONZE_PATH_VERSION,
+        "parent-layer": "raw",
+        "parent-object-key": raw_object_key,
+        "raw-object-key": raw_object_key,
+    }
+
+    for key, expected_value in (
+        expected_metadata.items()
+    ):
+        actual_value = bronze_metadata.get(
+            key
+        )
+
+        if actual_value != expected_value:
+            raise RuntimeError(
+                "Bronze R2 existant incohérent. "
+                f"Métadonnée={key}, "
+                f"attendu={expected_value}, "
+                f"obtenu={actual_value}, "
+                f"object_key={bronze_object_key}"
+            )
+
+    raw_sha256 = raw_metadata.get(
+        "sha256"
+    )
+
+    if not raw_sha256:
+        raise RuntimeError(
+            "SHA-256 absent des métadonnées Raw."
+        )
+
+    if (
+        bronze_metadata.get(
+            "parent-sha256"
+        )
+        != raw_sha256
+        or bronze_metadata.get(
+            "raw-sha256"
+        )
+        != raw_sha256
+    ):
+        raise RuntimeError(
+            "Lineage SHA-256 Raw/Bronze incohérent "
+            "sur l'artefact Bronze existant."
+        )
+
+    bronze_sha256 = bronze_metadata.get(
+        "sha256"
+    )
+
+    if (
+        not bronze_sha256
+        or len(bronze_sha256) != 64
+    ):
+        raise RuntimeError(
+            "SHA-256 Bronze absent ou invalide "
+            "dans les métadonnées R2."
+        )
+
+    try:
+        nombre_lignes_raw = int(
+            raw_metadata[
+                "record-count"
+            ]
+        )
+
+        nombre_lignes_bronze = int(
+            bronze_metadata[
+                "record-count"
+            ]
+        )
+
+        nombre_colonnes_bronze = int(
+            bronze_metadata[
+                "column-count"
+            ]
+        )
+
+        schema_drift_field_count = int(
+            bronze_metadata[
+                "schema-drift-field-count"
+            ]
+        )
+
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise RuntimeError(
+            "Métadonnées de volume ou de schema drift "
+            "Bronze invalides."
+        ) from error
+
+    if nombre_lignes_raw <= 0:
+        raise RuntimeError(
+            "record-count Raw invalide."
+        )
+
+    if nombre_lignes_bronze <= 0:
+        raise RuntimeError(
+            "record-count Bronze invalide."
+        )
+
+    if nombre_colonnes_bronze <= 0:
+        raise RuntimeError(
+            "column-count Bronze invalide."
+        )
+
+    if (
+        nombre_lignes_raw
+        != nombre_lignes_bronze
+    ):
+        raise RuntimeError(
+            "Volumes Raw/Bronze incohérents "
+            "dans les métadonnées de l'artefact existant."
+        )
+
+    schema_drift_raw = bronze_metadata.get(
+        "schema-drift-detected"
+    )
+
+    if schema_drift_raw not in {
+        "true",
+        "false",
+    }:
+        raise RuntimeError(
+            "schema-drift-detected Bronze invalide."
+        )
+
+    schema_drift_detected = (
+        schema_drift_raw == "true"
+    )
+
+    if (
+        schema_drift_detected
+        != (
+            schema_drift_field_count > 0
+        )
+    ):
+        raise RuntimeError(
+            "Métadonnées de schema drift Bronze "
+            "incohérentes."
+        )
+
+    git_commit_sha = bronze_metadata.get(
+        "git-commit-sha"
+    )
+    git_branch = bronze_metadata.get(
+        "git-branch"
+    )
+    git_worktree_dirty_raw = (
+        bronze_metadata.get(
+            "git-worktree-dirty"
+        )
+    )
+    processing_started_at_utc = (
+        bronze_metadata.get(
+            "processing-started-at-utc"
+        )
+    )
+
+    if not git_commit_sha:
+        raise RuntimeError(
+            "git-commit-sha absent du Bronze existant."
+        )
+
+    if not git_branch:
+        raise RuntimeError(
+            "git-branch absent du Bronze existant."
+        )
+
+    if git_worktree_dirty_raw not in {
+        "true",
+        "false",
+    }:
+        raise RuntimeError(
+            "git-worktree-dirty invalide "
+            "sur le Bronze existant."
+        )
+
+    if not processing_started_at_utc:
+        raise RuntimeError(
+            "processing-started-at-utc absent "
+            "du Bronze existant."
+        )
+
+    logger.info(
+        "Bronze R2 déjà présent pour ce contexte "
+        "de traitement."
+    )
+
+    logger.info(
+        f"Réutilisation du Bronze : {bronze_object_key}"
+    )
+
+    logger.info(
+        f"SHA-256 Bronze existant : {bronze_sha256}"
+    )
+
+    return {
+        "batch_id": batch_id,
+        "processing_run_id": processing_run_id,
+        "source": source,
+        "ingestion_date": ingestion_date,
+        "schema_version": BRONZE_SCHEMA_VERSION,
+        "path_version": BRONZE_PATH_VERSION,
+        "raw_object_key": raw_object_key,
+        "raw_sha256": raw_sha256,
+        "bronze_object_key": bronze_object_key,
+        "nombre_lignes_raw": nombre_lignes_raw,
+        "nombre_lignes_bronze": nombre_lignes_bronze,
+        "nombre_colonnes_bronze": nombre_colonnes_bronze,
+        "schema_drift_detected": schema_drift_detected,
+        "schema_drift_field_count": (
+            schema_drift_field_count
+        ),
+        "schema_drift": (
+            {}
+            if not schema_drift_detected
+            else None
+        ),
+        "git_commit_sha": git_commit_sha,
+        "git_worktree_dirty": (
+            git_worktree_dirty_raw == "true"
+        ),
+        "git_branch": git_branch,
+        "processing_started_at_utc": (
+            processing_started_at_utc
+        ),
+        "size_bytes": bronze_info[
+            "size_bytes"
+        ],
+        "sha256": bronze_sha256,
+        "storage_status": "REUSED",
+    }
+
+
+# ============================================================
 # Transformation principale
 # ============================================================
 
@@ -810,16 +1090,6 @@ def run_bronze_transformation(
         f"{resolved_processing_run_id}"
     )
 
-    logger.info(
-        "Git commit : "
-        f"{context.git_commit_sha}"
-    )
-
-    logger.info(
-        "Git worktree dirty : "
-        f"{context.git_worktree_dirty}"
-    )
-
     # ========================================================
     # 3. Initialisation R2
     # ========================================================
@@ -913,7 +1183,81 @@ def run_bronze_transformation(
         )
 
     # ========================================================
-    # 5. Téléchargement Raw
+    # 5. Construction déterministe de la clé Bronze v2
+    # ========================================================
+
+    bronze_object_key = (
+        build_bronze_object_key(
+            source=source,
+            batch_id=batch_id,
+            ingestion_date=(
+                ingestion_date
+            ),
+            processing_run_id=(
+                resolved_processing_run_id
+            ),
+            filename="offres.parquet",
+        )
+    )
+
+    parsed_bronze_key = (
+        parse_data_lake_object_key(
+            bronze_object_key
+        )
+    )
+
+    if (
+        parsed_bronze_key[
+            "path_version"
+        ]
+        != BRONZE_PATH_VERSION
+    ):
+
+        raise RuntimeError(
+            "Le chemin Bronze généré "
+            "n'utilise pas processing_v2."
+        )
+
+    # ========================================================
+    # 6. Idempotence : réutilisation d'un Bronze existant
+    # ========================================================
+
+    if storage.object_exists(
+        bronze_object_key
+    ):
+        return build_reused_bronze_result(
+            storage=storage,
+            bronze_object_key=(
+                bronze_object_key
+            ),
+            raw_object_key=(
+                raw_object_key
+            ),
+            raw_metadata=(
+                raw_metadata
+            ),
+            source=source,
+            batch_id=batch_id,
+            ingestion_date=(
+                ingestion_date
+            ),
+            processing_run_id=(
+                resolved_processing_run_id
+            ),
+        )
+
+    logger.info(
+        "Git commit : "
+        f"{context.git_commit_sha}"
+    )
+
+    logger.info(
+        "Git worktree dirty : "
+        f"{context.git_worktree_dirty}"
+    )
+
+    # ========================================================
+    # 7. Téléchargement Raw
     # ========================================================
 
     raw_bytes = (
@@ -1107,42 +1451,6 @@ def run_bronze_transformation(
     )
 
     # ========================================================
-    # 13. Construction de la clé Bronze v2
-    # ========================================================
-
-    bronze_object_key = (
-        build_bronze_object_key(
-            source=source,
-            batch_id=batch_id,
-            ingestion_date=(
-                ingestion_date
-            ),
-            processing_run_id=(
-                resolved_processing_run_id
-            ),
-            filename="offres.parquet",
-        )
-    )
-
-    parsed_bronze_key = (
-        parse_data_lake_object_key(
-            bronze_object_key
-        )
-    )
-
-    if (
-        parsed_bronze_key[
-            "path_version"
-        ]
-        != BRONZE_PATH_VERSION
-    ):
-
-        raise RuntimeError(
-            "Le chemin Bronze généré "
-            "n'utilise pas processing_v2."
-        )
-
-    # ========================================================
     # 14. Sérialisation Parquet en mémoire
     # ========================================================
 
@@ -1254,39 +1562,55 @@ def run_bronze_transformation(
     )
 
     # ========================================================
-    # 16. Protection contre un écrasement
+    # 16. Upload R2 atomique
     # ========================================================
 
-    if storage.object_exists(
-        bronze_object_key
-    ):
+    try:
 
-        raise RuntimeError(
-            "L'objet Bronze existe déjà. "
-            "Un processing_run_id doit identifier "
-            "une exécution unique : "
-            f"{bronze_object_key}"
+        upload_result = (
+            storage.upload_bytes(
+                object_key=(
+                    bronze_object_key
+                ),
+                data=bronze_bytes,
+                content_type=(
+                    "application/vnd.apache.parquet"
+                ),
+                metadata=(
+                    bronze_metadata
+                ),
+                overwrite=False,
+            )
         )
 
-    # ========================================================
-    # 17. Upload R2
-    # ========================================================
+    except FileExistsError:
 
-    upload_result = (
-        storage.upload_bytes(
-            object_key=(
+        logger.warning(
+            "Le Bronze a été créé par une autre "
+            "exécution entre le contrôle "
+            "d'existence et l'upload."
+        )
+
+        return build_reused_bronze_result(
+            storage=storage,
+            bronze_object_key=(
                 bronze_object_key
             ),
-            data=bronze_bytes,
-            content_type=(
-                "application/vnd.apache.parquet"
+            raw_object_key=(
+                raw_object_key
             ),
-            metadata=(
-                bronze_metadata
+            raw_metadata=(
+                raw_metadata
             ),
-            overwrite=False,
+            source=source,
+            batch_id=batch_id,
+            ingestion_date=(
+                ingestion_date
+            ),
+            processing_run_id=(
+                resolved_processing_run_id
+            ),
         )
-    )
 
     # ========================================================
     # 18. Validation post-upload
@@ -1495,6 +1819,12 @@ def run_bronze_transformation(
             schema_drift_detected
         ),
 
+        "schema_drift_field_count": (
+            len(
+                schema_drift
+            )
+        ),
+
         "schema_drift": (
             schema_drift
         ),
@@ -1526,6 +1856,8 @@ def run_bronze_transformation(
                 "sha256"
             ]
         ),
+
+        "storage_status": "CREATED",
     }
 
 
