@@ -1,7 +1,96 @@
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile
+
+  image: job-market-airflow:3.3.2-python3.10
+
+  user: "${AIRFLOW_UID:-50000}:0"
+
+  env_file:
+    - .env
+
+  environment:
+    # ==========================================================
+    # Airflow
+    # ==========================================================
+
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/${AIRFLOW_DB_NAME}
+
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-api-server:8080/execution/"
+
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
+
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: >-
+      /opt/airflow/config/simple_auth_manager_passwords.json.generated
+
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+
+    # ==========================================================
+    # Projet job-market-data
+    # ==========================================================
+
+    PROJECT_ROOT: /opt/airflow/project
+
+    PYTHONPATH: /opt/airflow/project
+
+    # Important :
+    # dans Docker, localhost ne désigne PAS PostgreSQL métier.
+    #
+    # Le service Docker s'appelle "postgres".
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+
+  working_dir: /opt/airflow/project
+
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./airflow_config:/opt/airflow/config
+    - ./:/opt/airflow/project
+
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+
+    postgres:
+      condition: service_healthy
+
+
 services:
+
+  # ============================================================
+  # PostgreSQL métier
+  # ============================================================
+  #
+  # Base déjà existante du projet.
+  #
+  # Elle contient :
+  #   silver
+  #   staging
+  #   intermediate
+  #   marts
+  #
+  # Son volume existant est conservé.
+  # ============================================================
+
   postgres:
     image: postgres:16
+
     container_name: job_market_postgres
+
     restart: unless-stopped
 
     environment:
@@ -17,10 +106,208 @@ services:
       - ./docker/postgres/init:/docker-entrypoint-initdb.d
 
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+        ]
+
       interval: 10s
       timeout: 5s
       retries: 5
 
+
+  # ============================================================
+  # PostgreSQL Airflow
+  # ============================================================
+  #
+  # Cette base ne contient AUCUNE donnée métier.
+  #
+  # Elle contient uniquement les métadonnées de l'orchestrateur :
+  # DAG runs, task instances, XCom, etc.
+  # ============================================================
+
+  airflow-db:
+    image: postgres:16
+
+    container_name: job_market_airflow_db
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${AIRFLOW_DB_NAME}
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${AIRFLOW_DB_USER} -d ${AIRFLOW_DB_NAME}"
+        ]
+
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  # ============================================================
+  # Initialisation Airflow
+  # ============================================================
+
+  airflow-init:
+    <<: *airflow-common
+
+    container_name: job_market_airflow_init
+
+
+    command:
+      - bash
+      - -c
+      - |
+        echo "=========================================="
+        echo "Initialisation Apache Airflow"
+        echo "=========================================="
+
+        airflow db migrate
+
+        echo
+        echo "Version Airflow :"
+        airflow version
+
+        echo
+        echo "Initialisation terminée."
+
+
+  # ============================================================
+  # API Server + interface Web
+  # ============================================================
+
+  airflow-api-server:
+    <<: *airflow-common
+
+    container_name: job_market_airflow_api_server
+
+    restart: unless-stopped
+
+    command: api-server
+
+    ports:
+      - "8080:8080"
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+      airflow-db:
+        condition: service_healthy
+
+      postgres:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/version', timeout=5).read()\""
+        ]
+
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+
+  # ============================================================
+  # Scheduler
+  # ============================================================
+
+  airflow-scheduler:
+    <<: *airflow-common
+
+    container_name: job_market_airflow_scheduler
+
+    restart: unless-stopped
+
+    command: scheduler
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+      airflow-db:
+        condition: service_healthy
+
+      postgres:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "airflow jobs check --job-type SchedulerJob --local"
+        ]
+
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+
+  # ============================================================
+  # DAG Processor
+  # ============================================================
+
+  airflow-dag-processor:
+    <<: *airflow-common
+
+    container_name: job_market_airflow_dag_processor
+
+    restart: unless-stopped
+
+    command: dag-processor
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+      airflow-db:
+        condition: service_healthy
+
+
+  # ============================================================
+  # Triggerer
+  # ============================================================
+  #
+  # Pas indispensable aujourd'hui, mais utile pour les futures
+  # tâches différées / sensors.
+  # ============================================================
+
+  airflow-triggerer:
+    <<: *airflow-common
+
+    container_name: job_market_airflow_triggerer
+
+    restart: unless-stopped
+
+    command: triggerer
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+      airflow-db:
+        condition: service_healthy
+
+
 volumes:
+
+  # Ne surtout pas supprimer :
+  # contient PostgreSQL métier actuel.
   postgres_data:
+
+  # Métadonnées Airflow uniquement.
+  airflow_postgres_data:
