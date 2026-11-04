@@ -1080,6 +1080,388 @@ def validate_non_loss(
 
 
 # ============================================================
+# Réutilisation Silver existant
+# ============================================================
+
+def build_reused_silver_result(
+    storage: R2Storage,
+    silver_object_key: str,
+    bronze_object_key: str,
+    bronze_metadata: dict[str, str],
+    source: str,
+    batch_id: str,
+    ingestion_date: str,
+    bronze_processing_run_id: str,
+    silver_processing_run_id: str,
+) -> dict[str, Any]:
+    """
+    Construit le résultat pipeline lorsqu'un artefact Silver
+    existe déjà pour le même processing_run_id cible.
+
+    Le Silver n'est ni téléchargé, ni régénéré, ni réécrit.
+    Les métadonnées minimales d'identité, de lineage,
+    d'observabilité et d'intégrité déclarée sont contrôlées.
+
+    Le Quality Gate Silver reste responsable de la validation
+    complète du contenu de l'artefact réutilisé.
+    """
+
+    silver_info = storage.get_object_info(
+        silver_object_key
+    )
+
+    silver_metadata = silver_info.get(
+        "metadata",
+        {},
+    )
+
+    bronze_sha256 = bronze_metadata.get(
+        "sha256"
+    )
+
+    raw_object_key = bronze_metadata.get(
+        "raw-object-key"
+    )
+
+    raw_sha256 = bronze_metadata.get(
+        "raw-sha256"
+    )
+
+    if not bronze_sha256:
+        raise RuntimeError(
+            "SHA-256 absent des métadonnées Bronze."
+        )
+
+    if not raw_object_key:
+        raise RuntimeError(
+            "raw-object-key absent des métadonnées Bronze."
+        )
+
+    if not raw_sha256:
+        raise RuntimeError(
+            "raw-sha256 absent des métadonnées Bronze."
+        )
+
+    expected_metadata = {
+        "layer": "silver",
+        "source": source,
+        "batch-id": batch_id,
+        "ingestion-date-utc": ingestion_date,
+        "processing-run-id": silver_processing_run_id,
+        "schema-version": SILVER_SCHEMA_VERSION,
+        "path-version": SILVER_PATH_VERSION,
+        "parent-layer": "bronze",
+        "parent-object-key": bronze_object_key,
+        "parent-sha256": bronze_sha256,
+        "parent-processing-run-id": (
+            bronze_processing_run_id
+        ),
+        "parent-schema-version": (
+            EXPECTED_BRONZE_SCHEMA_VERSION
+        ),
+        "bronze-object-key": bronze_object_key,
+        "bronze-sha256": bronze_sha256,
+        "bronze-processing-run-id": (
+            bronze_processing_run_id
+        ),
+        "raw-object-key": raw_object_key,
+        "raw-sha256": raw_sha256,
+    }
+
+    for key, expected_value in (
+        expected_metadata.items()
+    ):
+        actual_value = silver_metadata.get(
+            key
+        )
+
+        if actual_value != expected_value:
+            raise RuntimeError(
+                "Silver R2 existant incohérent. "
+                f"Métadonnée={key}, "
+                f"attendu={expected_value}, "
+                f"obtenu={actual_value}, "
+                f"object_key={silver_object_key}"
+            )
+
+    silver_sha256 = silver_metadata.get(
+        "sha256"
+    )
+
+    if (
+        not silver_sha256
+        or len(silver_sha256) != 64
+    ):
+        raise RuntimeError(
+            "SHA-256 Silver absent ou invalide "
+            "dans les métadonnées R2."
+        )
+
+    def parse_required_int(
+        key: str,
+    ) -> int:
+        try:
+            value = int(
+                silver_metadata[key]
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise RuntimeError(
+                "Métadonnée entière Silver invalide : "
+                f"{key}"
+            ) from error
+
+        if value < 0:
+            raise RuntimeError(
+                "Métadonnée entière Silver négative : "
+                f"{key}={value}"
+            )
+
+        return value
+
+    nombre_lignes_silver = parse_required_int(
+        "record-count"
+    )
+
+    nombre_colonnes_silver = parse_required_int(
+        "column-count"
+    )
+
+    if nombre_lignes_silver <= 0:
+        raise RuntimeError(
+            "record-count Silver invalide."
+        )
+
+    if nombre_colonnes_silver <= 0:
+        raise RuntimeError(
+            "column-count Silver invalide."
+        )
+
+    try:
+        nombre_lignes_bronze = int(
+            bronze_metadata["record-count"]
+        )
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise RuntimeError(
+            "record-count Bronze invalide."
+        ) from error
+
+    if (
+        nombre_lignes_bronze <= 0
+        or nombre_lignes_bronze
+        != nombre_lignes_silver
+    ):
+        raise RuntimeError(
+            "Volumes Bronze/Silver incohérents "
+            "dans les métadonnées."
+        )
+
+    metric_mapping = {
+        "nombre_ids_uniques": "unique-id-count",
+        "localisation_renseignee": "localisation-count",
+        "coordonnees_renseignees": "coordinates-count",
+        "salaires_renseignes": "salary-count",
+        "information_entreprise_disponible": (
+            "company-information-count"
+        ),
+    }
+
+    metrics: dict[str, int | None] = {}
+
+    for result_key, metadata_key in (
+        metric_mapping.items()
+    ):
+        raw_value = silver_metadata.get(
+            metadata_key
+        )
+
+        if raw_value is None:
+            metrics[result_key] = None
+            continue
+
+        try:
+            value = int(
+                raw_value
+            )
+        except (
+            TypeError,
+            ValueError,
+        ) as error:
+            raise RuntimeError(
+                "Métadonnée métrique Silver invalide : "
+                f"{metadata_key}={raw_value}"
+            ) from error
+
+        if (
+            value < 0
+            or value > nombre_lignes_silver
+        ):
+            raise RuntimeError(
+                "Métadonnée métrique Silver hors limites : "
+                f"{metadata_key}={value}"
+            )
+
+        metrics[result_key] = value
+
+    if (
+        metrics["nombre_ids_uniques"]
+        is not None
+        and metrics["nombre_ids_uniques"]
+        != nombre_lignes_silver
+    ):
+        raise RuntimeError(
+            "unique-id-count Silver incohérent "
+            "avec record-count."
+        )
+
+    git_commit_sha = silver_metadata.get(
+        "git-commit-sha"
+    )
+
+    git_branch = silver_metadata.get(
+        "git-branch"
+    )
+
+    git_worktree_dirty_raw = (
+        silver_metadata.get(
+            "git-worktree-dirty"
+        )
+    )
+
+    processing_started_at_utc = (
+        silver_metadata.get(
+            "processing-started-at-utc"
+        )
+    )
+
+    if not git_commit_sha:
+        raise RuntimeError(
+            "git-commit-sha absent du Silver existant."
+        )
+
+    if not git_branch:
+        raise RuntimeError(
+            "git-branch absent du Silver existant."
+        )
+
+    if git_worktree_dirty_raw not in {
+        "true",
+        "false",
+    }:
+        raise RuntimeError(
+            "git-worktree-dirty invalide "
+            "sur le Silver existant."
+        )
+
+    if not processing_started_at_utc:
+        raise RuntimeError(
+            "processing-started-at-utc absent "
+            "du Silver existant."
+        )
+
+    is_replay = (
+        silver_processing_run_id
+        != bronze_processing_run_id
+    )
+
+    if not is_replay:
+        for provenance_key in (
+            "git-commit-sha",
+            "git-branch",
+            "git-worktree-dirty",
+            "processing-started-at-utc",
+        ):
+            if (
+                silver_metadata.get(
+                    provenance_key
+                )
+                != bronze_metadata.get(
+                    provenance_key
+                )
+            ):
+                raise RuntimeError(
+                    "Même processing_run_id mais "
+                    "provenance Bronze/Silver différente : "
+                    f"{provenance_key}."
+                )
+
+    logger.info(
+        "Silver R2 déjà présent pour ce contexte "
+        "de traitement."
+    )
+
+    logger.info(
+        f"Réutilisation du Silver : {silver_object_key}"
+    )
+
+    logger.info(
+        f"SHA-256 Silver existant : {silver_sha256}"
+    )
+
+    return {
+        "batch_id": batch_id,
+        "bronze_processing_run_id": (
+            bronze_processing_run_id
+        ),
+        "processing_run_id": (
+            silver_processing_run_id
+        ),
+        "replay_silver": is_replay,
+        "source": source,
+        "ingestion_date": ingestion_date,
+        "schema_version": SILVER_SCHEMA_VERSION,
+        "path_version": SILVER_PATH_VERSION,
+        "raw_object_key": raw_object_key,
+        "bronze_object_key": bronze_object_key,
+        "silver_object_key": silver_object_key,
+        "nombre_lignes_bronze": (
+            nombre_lignes_bronze
+        ),
+        "nombre_lignes_silver": (
+            nombre_lignes_silver
+        ),
+        "nombre_ids_uniques": metrics[
+            "nombre_ids_uniques"
+        ],
+        "nombre_colonnes_silver": (
+            nombre_colonnes_silver
+        ),
+        "localisation_renseignee": metrics[
+            "localisation_renseignee"
+        ],
+        "coordonnees_renseignees": metrics[
+            "coordonnees_renseignees"
+        ],
+        "salaires_renseignes": metrics[
+            "salaires_renseignes"
+        ],
+        "information_entreprise_disponible": metrics[
+            "information_entreprise_disponible"
+        ],
+        "git_commit_sha": git_commit_sha,
+        "git_worktree_dirty": (
+            git_worktree_dirty_raw == "true"
+        ),
+        "git_branch": git_branch,
+        "processing_started_at_utc": (
+            processing_started_at_utc
+        ),
+        "raw_sha256": raw_sha256,
+        "bronze_sha256": bronze_sha256,
+        "size_bytes": silver_info["size_bytes"],
+        "sha256": silver_sha256,
+        "storage_status": "REUSED",
+    }
+
+
+# ============================================================
 # Transformation principale
 # ============================================================
 
@@ -1251,7 +1633,64 @@ def run_silver_transformation(
             )
 
     # ========================================================
-    # 4. SHA parent Bronze
+    # 4. Processing Run cible et clé Silver
+    # ========================================================
+
+    target_processing_run_id = str(
+        processing_run_id
+        or bronze_processing_run_id
+    )
+
+    silver_object_key = (
+        build_silver_object_key(
+            source=source,
+            batch_id=batch_id,
+            ingestion_date=(
+                ingestion_date
+            ),
+            processing_run_id=(
+                target_processing_run_id
+            ),
+            filename="offres.parquet",
+        )
+    )
+
+    parsed_silver_key = (
+        parse_data_lake_object_key(
+            silver_object_key
+        )
+    )
+
+    if (
+        parsed_silver_key["path_version"]
+        != SILVER_PATH_VERSION
+    ):
+        raise RuntimeError(
+            "Le chemin Silver généré "
+            "n'utilise pas processing_v2."
+        )
+
+    if storage.object_exists(
+        silver_object_key
+    ):
+        return build_reused_silver_result(
+            storage=storage,
+            silver_object_key=silver_object_key,
+            bronze_object_key=bronze_object_key,
+            bronze_metadata=bronze_metadata,
+            source=source,
+            batch_id=batch_id,
+            ingestion_date=ingestion_date,
+            bronze_processing_run_id=(
+                bronze_processing_run_id
+            ),
+            silver_processing_run_id=(
+                target_processing_run_id
+            ),
+        )
+
+    # ========================================================
+    # 5. SHA parent Bronze
     # ========================================================
 
     bronze_bytes = (
@@ -1295,7 +1734,7 @@ def run_silver_transformation(
         )
 
     # ========================================================
-    # 5. Contexte Silver
+    # 6. Contexte Silver
     # ========================================================
 
     context = (
@@ -1316,6 +1755,15 @@ def run_silver_transformation(
         context.processing_run_id
     )
 
+    if (
+        silver_processing_run_id
+        != target_processing_run_id
+    ):
+        raise RuntimeError(
+            "processing_run_id Silver résolu "
+            "différent du processing_run_id cible."
+        )
+
     logger.info(
         "Bronze processing_run_id : "
         f"{bronze_processing_run_id}"
@@ -1327,7 +1775,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 6. Lecture Bronze
+    # 7. Lecture Bronze
     # ========================================================
 
     try:
@@ -1387,7 +1835,7 @@ def run_silver_transformation(
         )
 
     # ========================================================
-    # 7. Schéma
+    # 8. Schéma
     # ========================================================
 
     validate_required_columns(
@@ -1395,7 +1843,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 8. Contrôles techniques Bronze
+    # 9. Contrôles techniques Bronze
     # ========================================================
 
     if (
@@ -1464,7 +1912,7 @@ def run_silver_transformation(
         )
 
     # ========================================================
-    # 9. IDs Bronze
+    # 10. IDs Bronze
     # ========================================================
 
     missing_bronze_ids = int(
@@ -1514,7 +1962,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 10. Suppression colonne explicitement exclue
+    # 11. Suppression colonne explicitement exclue
     # ========================================================
 
     df = df.drop(
@@ -1525,7 +1973,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 11. Renommage
+    # 12. Renommage
     # ========================================================
 
     df = df.rename(
@@ -1535,7 +1983,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 12. Nettoyage
+    # 13. Nettoyage
     # ========================================================
 
     df = clean_string_columns(
@@ -1557,7 +2005,7 @@ def run_silver_transformation(
         )
 
     # ========================================================
-    # 13. Dates
+    # 14. Dates
     # ========================================================
 
     df = parse_dates(
@@ -1565,7 +2013,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 14. IDs Silver
+    # 15. IDs Silver
     # ========================================================
 
     validate_unique_ids(
@@ -1573,7 +2021,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 15. Règles métier Silver
+    # 16. Règles métier Silver
     # ========================================================
 
     df = compute_date_coherence(
@@ -1593,7 +2041,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 16. Colonnes techniques Silver
+    # 17. Colonnes techniques Silver
     # ========================================================
 
     processing_time = (
@@ -1627,7 +2075,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 17. Typage
+    # 18. Typage
     # ========================================================
 
     df = apply_final_typing(
@@ -1635,7 +2083,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 18. Garantie non-perte
+    # 19. Garantie non-perte
     # ========================================================
 
     validate_non_loss(
@@ -1664,7 +2112,7 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 19. Lineage Raw hérité
+    # 20. Lineage Raw hérité
     # ========================================================
 
     raw_object_key = (
@@ -1692,41 +2140,6 @@ def run_silver_transformation(
         )
 
     # ========================================================
-    # 20. Construction clé Silver
-    # ========================================================
-
-    silver_object_key = (
-        build_silver_object_key(
-            source=source,
-            batch_id=batch_id,
-            ingestion_date=(
-                ingestion_date
-            ),
-            processing_run_id=(
-                silver_processing_run_id
-            ),
-            filename="offres.parquet",
-        )
-    )
-
-    parsed_silver_key = (
-        parse_data_lake_object_key(
-            silver_object_key
-        )
-    )
-
-    if (
-        parsed_silver_key[
-            "path_version"
-        ]
-        != SILVER_PATH_VERSION
-    ):
-        raise RuntimeError(
-            "Le chemin Silver généré "
-            "n'utilise pas processing_v2."
-        )
-
-    # ========================================================
     # 21. Sérialisation
     # ========================================================
 
@@ -1748,7 +2161,35 @@ def run_silver_transformation(
         )
 
     # ========================================================
-    # 22. Métadonnées Silver
+    # 22. Métriques Silver
+    # ========================================================
+
+    localisation_count = int(
+        df["localisation_renseignee"]
+        .fillna(False)
+        .sum()
+    )
+
+    coordinates_count = int(
+        df["coordonnees_renseignees"]
+        .fillna(False)
+        .sum()
+    )
+
+    salary_count = int(
+        df["salaire_renseigne"]
+        .fillna(False)
+        .sum()
+    )
+
+    entreprise_count = int(
+        df["information_entreprise_disponible"]
+        .fillna(False)
+        .sum()
+    )
+
+    # ========================================================
+    # 23. Métadonnées Silver
     # ========================================================
 
     silver_metadata = {
@@ -1791,6 +2232,29 @@ def run_silver_transformation(
             df.shape[
                 1
             ]
+        ),
+
+        # ----------------------------------------------------
+        # Observabilité / métriques Silver
+        # ----------------------------------------------------
+        "unique-id-count": str(
+            unique_ids
+        ),
+
+        "localisation-count": str(
+            localisation_count
+        ),
+
+        "coordinates-count": str(
+            coordinates_count
+        ),
+
+        "salary-count": str(
+            salary_count
+        ),
+
+        "company-information-count": str(
+            entreprise_count
         ),
 
         # ----------------------------------------------------
@@ -1846,38 +2310,38 @@ def run_silver_transformation(
     )
 
     # ========================================================
-    # 23. Immutabilité
+    # 24. Upload atomique immutable
     # ========================================================
 
-    if storage.object_exists(
-        silver_object_key
-    ):
-        raise RuntimeError(
-            "L'objet Silver existe déjà : "
-            f"{silver_object_key}"
+    try:
+        upload_result = (
+            storage.upload_bytes(
+                object_key=silver_object_key,
+                data=silver_bytes,
+                content_type=(
+                    "application/vnd.apache.parquet"
+                ),
+                metadata=silver_metadata,
+                overwrite=False,
+            )
         )
 
-    # ========================================================
-    # 24. Upload
-    # ========================================================
-
-    upload_result = (
-        storage.upload_bytes(
-            object_key=(
-                silver_object_key
+    except FileExistsError:
+        return build_reused_silver_result(
+            storage=storage,
+            silver_object_key=silver_object_key,
+            bronze_object_key=bronze_object_key,
+            bronze_metadata=bronze_metadata,
+            source=source,
+            batch_id=batch_id,
+            ingestion_date=ingestion_date,
+            bronze_processing_run_id=(
+                bronze_processing_run_id
             ),
-            data=(
-                silver_bytes
+            silver_processing_run_id=(
+                silver_processing_run_id
             ),
-            content_type=(
-                "application/vnd.apache.parquet"
-            ),
-            metadata=(
-                silver_metadata
-            ),
-            overwrite=False,
         )
-    )
 
     # ========================================================
     # 25. Validation post-upload
@@ -1927,44 +2391,9 @@ def run_silver_transformation(
         )
 
     # ========================================================
-    # 26. Métriques
+    # 26. Résumé
     # ========================================================
 
-    localisation_count = int(
-        df[
-            "localisation_renseignee"
-        ]
-        .fillna(False)
-        .sum()
-    )
-
-    coordinates_count = int(
-        df[
-            "coordonnees_renseignees"
-        ]
-        .fillna(False)
-        .sum()
-    )
-
-    salary_count = int(
-        df[
-            "salaire_renseigne"
-        ]
-        .fillna(False)
-        .sum()
-    )
-
-    entreprise_count = int(
-        df[
-            "information_entreprise_disponible"
-        ]
-        .fillna(False)
-        .sum()
-    )
-
-    # ========================================================
-    # 27. Résumé
-    # ========================================================
 
     print()
     print("=" * 70)
@@ -2093,6 +2522,11 @@ def run_silver_transformation(
             silver_processing_run_id
         ),
 
+        "replay_silver": (
+            silver_processing_run_id
+            != bronze_processing_run_id
+        ),
+
         "source": (
             source
         ),
@@ -2171,6 +2605,14 @@ def run_silver_transformation(
             context.processing_started_at_utc
         ),
 
+        "raw_sha256": (
+            raw_sha256
+        ),
+
+        "bronze_sha256": (
+            bronze_sha256
+        ),
+
         "size_bytes": (
             upload_result[
                 "size_bytes"
@@ -2182,6 +2624,8 @@ def run_silver_transformation(
                 "sha256"
             ]
         ),
+
+        "storage_status": "CREATED",
     }
 
 
