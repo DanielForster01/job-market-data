@@ -6,16 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
-from airflow.sdk import (
-    dag,
-    get_current_context,
-    task,
-)
+from airflow.sdk import dag, get_current_context, task
 
-
-# ============================================================
-# Configuration du DAG
-# ============================================================
 
 DAG_ID = "france_travail_job_market_pipeline"
 
@@ -33,8 +25,41 @@ RESULT_PREFIX = "__AIRFLOW_RESULT_JSON__="
 
 
 # ============================================================
-# Helper d'exécution dans le virtualenv projet
+# Helpers
 # ============================================================
+
+
+def ensure_equal(
+    actual,
+    expected,
+    label: str,
+) -> None:
+    """
+    Vérifie une égalité de contrat entre deux étapes.
+    """
+
+    if actual != expected:
+        raise RuntimeError(
+            f"{label} incohérent. "
+            f"Attendu={expected!r}, "
+            f"obtenu={actual!r}"
+        )
+
+
+def ensure_in(
+    value,
+    allowed: set,
+    label: str,
+) -> None:
+    """
+    Vérifie qu'une valeur appartient à un ensemble autorisé.
+    """
+
+    if value not in allowed:
+        raise RuntimeError(
+            f"{label} inattendu : {value!r}. "
+            f"Valeurs autorisées={sorted(allowed)!r}"
+        )
 
 
 def run_project_python(
@@ -42,17 +67,23 @@ def run_project_python(
     payload: dict,
 ) -> dict:
     """
-    Exécute du code Python dans le virtualenv du projet.
+    Exécute le code métier dans le virtualenv projet.
 
-    Objectifs :
-    - Airflow reste dans son environnement Python natif ;
-    - les dépendances métier restent isolées dans le venv projet ;
-    - le DAG n'importe pas les dépendances métier au parsing ;
-    - seuls de petits résultats JSON remontent dans XCom.
+    Airflow reste dans son propre environnement Python.
+    Les dépendances métier restent isolées dans :
+
+        /opt/airflow/project_venv
+
+    Seules de petites métadonnées JSON remontent dans XCom.
     """
 
-    project_root = Path(PROJECT_ROOT)
-    project_python = Path(PROJECT_PYTHON)
+    project_root = Path(
+        PROJECT_ROOT
+    )
+
+    project_python = Path(
+        PROJECT_PYTHON
+    )
 
     if not project_root.is_dir():
         raise RuntimeError(
@@ -67,9 +98,13 @@ def run_project_python(
         )
 
     command = [
-        str(project_python),
+        str(
+            project_python
+        ),
         "-c",
-        textwrap.dedent(python_code),
+        textwrap.dedent(
+            python_code
+        ),
         json.dumps(
             payload,
             ensure_ascii=False,
@@ -78,14 +113,14 @@ def run_project_python(
 
     process = subprocess.Popen(
         command,
-        cwd=str(project_root),
+        cwd=str(
+            project_root
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
     )
-
-    airflow_result = None
 
     if process.stdout is None:
         raise RuntimeError(
@@ -93,7 +128,10 @@ def run_project_python(
             "du processus projet."
         )
 
+    airflow_result = None
+
     for raw_line in process.stdout:
+
         line = raw_line.rstrip()
 
         print(
@@ -101,34 +139,42 @@ def run_project_python(
             flush=True,
         )
 
-        if line.startswith(RESULT_PREFIX):
-            raw_result = line[
-                len(RESULT_PREFIX):
-            ]
+        if line.startswith(
+            RESULT_PREFIX
+        ):
 
-            airflow_result = json.loads(
-                raw_result
+            airflow_result = (
+                json.loads(
+                    line[
+                        len(
+                            RESULT_PREFIX
+                        ):
+                    ]
+                )
             )
 
-    return_code = process.wait()
+    return_code = (
+        process.wait()
+    )
 
     if return_code != 0:
         raise RuntimeError(
-            "Le processus Python projet a échoué "
-            f"avec le code {return_code}."
+            "Le processus Python projet "
+            "a échoué avec le code "
+            f"{return_code}."
         )
 
     if airflow_result is None:
         raise RuntimeError(
             "Le processus projet s'est terminé "
-            "sans retourner de résultat Airflow."
+            "sans résultat Airflow."
         )
 
     return airflow_result
 
 
 # ============================================================
-# Définition du DAG
+# DAG
 # ============================================================
 
 
@@ -136,7 +182,7 @@ def run_project_python(
     dag_id=DAG_ID,
     description=(
         "Pipeline Data Engineering France Travail : "
-        "acquisition, qualité, transformation et publication."
+        "Raw -> Bronze -> Silver avec Quality Gates R2."
     ),
     schedule=None,
     start_date=datetime(
@@ -157,7 +203,7 @@ def run_project_python(
 def france_travail_job_market_pipeline():
 
     # ========================================================
-    # 1. Preflight
+    # 1. PREFLIGHT
     # ========================================================
 
     @task(
@@ -165,41 +211,51 @@ def france_travail_job_market_pipeline():
         retries=0,
     )
     def preflight() -> dict:
-        """
-        Vérifie les dépendances nécessaires au slice actuel :
-        acquisition Raw + Quality Gate Raw + Bronze + Quality Gate Bronze.
 
-        Aucun appel France Travail et aucune écriture R2.
-        """
+        project_root = Path(
+            PROJECT_ROOT
+        )
 
-        project_root = Path(PROJECT_ROOT)
-        project_python = Path(PROJECT_PYTHON)
+        project_python = Path(
+            PROJECT_PYTHON
+        )
 
         required_files = [
-            project_root
-            / "src"
-            / "ingestion"
-            / "france_travail_ingestion.py",
-
-            project_root
-            / "src"
-            / "quality"
-            / "raw_r2_quality_check.py",
-
-            project_root
-            / "src"
-            / "transformation"
-            / "raw_to_bronze.py",
-
-            project_root
-            / "src"
-            / "quality"
-            / "bronze_r2_quality_check.py",
-
-            project_root
-            / "src"
-            / "storage"
-            / "r2_storage.py",
+            (
+                project_root
+                / "src/ingestion/"
+                "france_travail_ingestion.py"
+            ),
+            (
+                project_root
+                / "src/quality/"
+                "raw_r2_quality_check.py"
+            ),
+            (
+                project_root
+                / "src/transformation/"
+                "raw_to_bronze.py"
+            ),
+            (
+                project_root
+                / "src/quality/"
+                "bronze_r2_quality_check.py"
+            ),
+            (
+                project_root
+                / "src/transformation/"
+                "bronze_to_silver.py"
+            ),
+            (
+                project_root
+                / "src/quality/"
+                "silver_r2_quality_check.py"
+            ),
+            (
+                project_root
+                / "src/storage/"
+                "r2_storage.py"
+            ),
         ]
 
         if not project_root.is_dir():
@@ -215,92 +271,157 @@ def france_travail_job_market_pipeline():
             )
 
         missing_files = [
-            str(path)
+            str(
+                path
+            )
             for path in required_files
             if not path.is_file()
         ]
 
         if missing_files:
+
             raise RuntimeError(
                 "Fichiers projet manquants : "
-                + ", ".join(missing_files)
+                + ", ".join(
+                    missing_files
+                )
             )
 
-        runtime_check = subprocess.run(
-            [
-                str(project_python),
-                "-c",
-                (
-                    "from "
-                    "src.ingestion.france_travail_ingestion "
-                    "import run_ingestion; "
-                    "from "
-                    "src.quality.raw_r2_quality_check "
-                    "import validate_raw_object; "
-                    "from "
-                    "src.transformation.raw_to_bronze "
-                    "import run_bronze_transformation; "
-                    "from "
-                    "src.quality.bronze_r2_quality_check "
-                    "import validate_bronze_object; "
-                    "from "
-                    "src.storage.r2_storage "
-                    "import R2Storage; "
-                    "print('PROJECT_RUNTIME_OK')"
-                ),
-            ],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
+        runtime_code = (
+            "from "
+            "src.ingestion.france_travail_ingestion "
+            "import run_ingestion; "
+
+            "from "
+            "src.quality.raw_r2_quality_check "
+            "import validate_raw_object; "
+
+            "from "
+            "src.transformation.raw_to_bronze "
+            "import run_bronze_transformation; "
+
+            "from "
+            "src.quality.bronze_r2_quality_check "
+            "import validate_bronze_object; "
+
+            "from "
+            "src.transformation.bronze_to_silver "
+            "import run_silver_transformation; "
+
+            "from "
+            "src.quality.silver_r2_quality_check "
+            "import validate_silver_object; "
+
+            "from "
+            "src.storage.r2_storage "
+            "import R2Storage; "
+
+            "print('PROJECT_RUNTIME_OK')"
         )
 
-        if runtime_check.returncode != 0:
-            print(runtime_check.stdout)
-            print(runtime_check.stderr)
+        runtime_check = (
+            subprocess.run(
+                [
+                    str(
+                        project_python
+                    ),
+                    "-c",
+                    runtime_code,
+                ],
+                cwd=str(
+                    project_root
+                ),
+                capture_output=True,
+                text=True,
+            )
+        )
+
+        if (
+            runtime_check.returncode
+            != 0
+        ):
+
+            print(
+                runtime_check.stdout
+            )
+
+            print(
+                runtime_check.stderr
+            )
 
             raise RuntimeError(
                 "Le runtime Python projet "
                 "n'est pas opérationnel."
             )
 
-        print("Preflight validé.")
-        print(f"PROJECT_ROOT={project_root}")
-        print(f"PROJECT_PYTHON={project_python}")
+        print(
+            "Preflight validé."
+        )
+
+        print(
+            f"PROJECT_ROOT="
+            f"{project_root}"
+        )
+
+        print(
+            f"PROJECT_PYTHON="
+            f"{project_python}"
+        )
 
         return {
             "status": "VALID",
-            "project_root": str(project_root),
-            "project_python": str(project_python),
+            "project_root": str(
+                project_root
+            ),
+            "project_python": str(
+                project_python
+            ),
         }
 
     # ========================================================
-    # 2. Création du contexte d'acquisition
+    # 2. CONTEXTE ACQUISITION
     # ========================================================
 
     @task(
-        task_id="create_acquisition_context",
+        task_id=(
+            "create_acquisition_context"
+        ),
         retries=0,
     )
     def create_acquisition_context() -> dict:
         """
-        Crée le contexte métier d'acquisition.
+        Crée un batch_id stable pour un même DAG Run.
 
-        Un même DAG Run conserve le même batch_id et le même
-        ingestion_datetime lors d'un retry.
+        Nouveau DAG Run
+            -> nouveau batch_id
+
+        Retry du même DAG Run
+            -> même batch_id
         """
 
-        context = get_current_context()
+        context = (
+            get_current_context()
+        )
 
-        run_id = context.get("run_id")
+        run_id = (
+            context.get(
+                "run_id"
+            )
+        )
 
         if not run_id:
-            task_instance = (
-                context.get("task_instance")
-                or context.get("ti")
+
+            ti = (
+                context.get(
+                    "task_instance"
+                )
+                or context.get(
+                    "ti"
+                )
             )
 
             run_id = getattr(
-                task_instance,
+                ti,
                 "run_id",
                 None,
             )
@@ -311,12 +432,19 @@ def france_travail_job_market_pipeline():
                 "le run_id Airflow."
             )
 
-        logical_date = context.get(
-            "logical_date"
+        logical_date = (
+            context.get(
+                "logical_date"
+            )
         )
 
         if logical_date is None:
-            dag_run = context.get("dag_run")
+
+            dag_run = (
+                context.get(
+                    "dag_run"
+                )
+            )
 
             logical_date = getattr(
                 dag_run,
@@ -327,13 +455,17 @@ def france_travail_job_market_pipeline():
         if logical_date is None:
             raise RuntimeError(
                 "Impossible de déterminer "
-                "l'horodatage stable du DAG Run."
+                "l'horodatage stable "
+                "du DAG Run."
             )
 
-        if logical_date.tzinfo is None:
+        if (
+            logical_date.tzinfo
+            is None
+        ):
             raise RuntimeError(
-                "L'horodatage Airflow doit être "
-                "timezone-aware."
+                "L'horodatage Airflow "
+                "doit être timezone-aware."
             )
 
         ingestion_datetime = (
@@ -352,15 +484,19 @@ def france_travail_job_market_pipeline():
         )
 
         result = {
-            "batch_id": str(batch_id),
+            "batch_id": str(
+                batch_id
+            ),
             "ingestion_datetime_utc": (
-                ingestion_datetime.isoformat()
+                ingestion_datetime
+                .isoformat()
             ),
         }
 
         print(
             "Contexte d'acquisition créé :"
         )
+
         print(
             json.dumps(
                 result,
@@ -371,7 +507,7 @@ def france_travail_job_market_pipeline():
         return result
 
     # ========================================================
-    # 3. Ingestion Raw
+    # 3. INGESTION RAW
     # ========================================================
 
     @task(
@@ -388,17 +524,11 @@ def france_travail_job_market_pipeline():
     def ingest_raw(
         acquisition_context: dict,
     ) -> dict:
-        """
-        Exécute l'ingestion France Travail dans le virtualenv projet.
-
-        Grâce à l'idempotence :
-        - premier passage : CREATED ;
-        - retry du même DAG Run : REUSED si le Raw existe déjà.
-        """
 
         child_code = """
         import json
         import sys
+
         from datetime import datetime
 
         from src.ingestion.france_travail_ingestion import (
@@ -409,44 +539,44 @@ def france_travail_job_market_pipeline():
             sys.argv[1]
         )
 
-        ingestion_datetime = (
-            datetime.fromisoformat(
-                payload[
-                    "ingestion_datetime_utc"
-                ]
-            )
-        )
-
         result = run_ingestion(
             batch_id=payload[
                 "batch_id"
             ],
             ingestion_datetime=(
-                ingestion_datetime
+                datetime.fromisoformat(
+                    payload[
+                        "ingestion_datetime_utc"
+                    ]
+                )
             ),
         )
 
-        compact_result = {
+        compact = {
             "batch_id": result[
                 "batch_id"
             ],
-            "ingestion_datetime_utc": (
-                result[
-                    "ingestion_datetime_utc"
-                ]
-            ),
+
+            "ingestion_datetime_utc": result[
+                "ingestion_datetime_utc"
+            ],
+
             "object_key": result[
                 "object_key"
             ],
+
             "nombre_offres": result[
                 "nombre_offres"
             ],
+
             "size_bytes": result[
                 "size_bytes"
             ],
+
             "sha256": result[
                 "sha256"
             ],
+
             "storage_status": result[
                 "storage_status"
             ],
@@ -455,60 +585,72 @@ def france_travail_job_market_pipeline():
         print(
             "__AIRFLOW_RESULT_JSON__="
             + json.dumps(
-                compact_result,
+                compact,
                 ensure_ascii=False,
             )
         )
         """
 
-        result = run_project_python(
-            python_code=child_code,
-            payload=acquisition_context,
+        result = (
+            run_project_python(
+                child_code,
+                acquisition_context,
+            )
         )
 
-        if (
-            result["batch_id"]
-            != acquisition_context["batch_id"]
-        ):
-            raise RuntimeError(
-                "batch_id incohérent après ingestion."
-            )
+        ensure_equal(
+            result[
+                "batch_id"
+            ],
+            acquisition_context[
+                "batch_id"
+            ],
+            "batch_id après ingestion",
+        )
 
-        if (
-            result["ingestion_datetime_utc"]
-            != acquisition_context[
+        ensure_equal(
+            result[
                 "ingestion_datetime_utc"
-            ]
-        ):
-            raise RuntimeError(
-                "ingestion_datetime incohérent "
-                "après ingestion."
-            )
+            ],
+            acquisition_context[
+                "ingestion_datetime_utc"
+            ],
+            (
+                "ingestion_datetime "
+                "après ingestion"
+            ),
+        )
 
-        if result["storage_status"] not in {
-            "CREATED",
-            "REUSED",
-        }:
-            raise RuntimeError(
-                "storage_status inattendu : "
-                f"{result['storage_status']}"
-            )
+        ensure_in(
+            result[
+                "storage_status"
+            ],
+            {
+                "CREATED",
+                "REUSED",
+            },
+            "storage_status Raw",
+        )
 
         print(
             "Ingestion Raw terminée : "
             f"{result['storage_status']}"
         )
+
         print(
-            f"Offres : {result['nombre_offres']}"
+            "Offres : "
+            f"{result['nombre_offres']}"
         )
+
         print(
-            f"Objet : {result['object_key']}"
+            "Objet Raw : "
+            f"{result['object_key']}"
         )
 
         return result
 
     # ========================================================
-    # 4. Raw Quality Gate
+    # 4. QUALITY GATE RAW
     # ========================================================
 
     @task(
@@ -518,10 +660,6 @@ def france_travail_job_market_pipeline():
     def validate_raw(
         ingestion_result: dict,
     ) -> dict:
-        """
-        Valide explicitement le Raw produit ou réutilisé.
-        Une erreur de qualité bloque le pipeline.
-        """
 
         child_code = """
         import json
@@ -541,25 +679,31 @@ def france_travail_job_market_pipeline():
             ]
         )
 
-        compact_result = {
+        compact = {
             "statut": result[
                 "statut"
             ],
+
             "batch_id": result[
                 "batch_id"
             ],
+
             "nombre_offres": result[
                 "nombre_offres"
             ],
+
             "nombre_ids_uniques": result[
                 "nombre_ids_uniques"
             ],
+
             "nombre_doublons": result[
                 "nombre_doublons"
             ],
+
             "size_bytes": result[
                 "size_bytes"
             ],
+
             "sha256": result[
                 "sha256"
             ],
@@ -568,85 +712,125 @@ def france_travail_job_market_pipeline():
         print(
             "__AIRFLOW_RESULT_JSON__="
             + json.dumps(
-                compact_result,
+                compact,
                 ensure_ascii=False,
             )
         )
         """
 
-        quality_result = run_project_python(
-            python_code=child_code,
-            payload={
-                "object_key": (
-                    ingestion_result[
-                        "object_key"
-                    ]
-                ),
-            },
+        quality = (
+            run_project_python(
+                child_code,
+                {
+                    "object_key": (
+                        ingestion_result[
+                            "object_key"
+                        ]
+                    ),
+                },
+            )
         )
 
-        if quality_result["statut"] != "VALIDE":
-            raise RuntimeError(
-                "Raw Quality Gate non valide."
-            )
+        ensure_equal(
+            quality[
+                "statut"
+            ],
+            "VALIDE",
+            "statut Quality Gate Raw",
+        )
 
-        if (
-            quality_result["batch_id"]
-            != ingestion_result["batch_id"]
-        ):
-            raise RuntimeError(
-                "batch_id incohérent entre "
-                "ingestion et Raw Quality Gate."
-            )
+        ensure_equal(
+            quality[
+                "batch_id"
+            ],
+            ingestion_result[
+                "batch_id"
+            ],
+            "batch_id Raw",
+        )
 
-        if (
-            quality_result["nombre_offres"]
-            != ingestion_result["nombre_offres"]
-        ):
-            raise RuntimeError(
-                "Nombre d'offres incohérent entre "
-                "ingestion et Raw Quality Gate."
-            )
+        ensure_equal(
+            quality[
+                "nombre_offres"
+            ],
+            ingestion_result[
+                "nombre_offres"
+            ],
+            "volume Raw",
+        )
 
-        if (
-            quality_result["sha256"]
-            != ingestion_result["sha256"]
-        ):
-            raise RuntimeError(
-                "SHA-256 incohérent entre "
-                "ingestion et Raw Quality Gate."
-            )
+        ensure_equal(
+            quality[
+                "sha256"
+            ],
+            ingestion_result[
+                "sha256"
+            ],
+            "SHA-256 Raw",
+        )
 
-        if quality_result["nombre_doublons"] != 0:
-            raise RuntimeError(
-                "Le Raw contient des doublons."
-            )
+        ensure_equal(
+            quality[
+                "nombre_doublons"
+            ],
+            0,
+            "doublons Raw",
+        )
+
+        ensure_equal(
+            quality[
+                "nombre_ids_uniques"
+            ],
+            quality[
+                "nombre_offres"
+            ],
+            "IDs uniques Raw",
+        )
 
         result = {
             "statut": "VALIDE",
-            "batch_id": ingestion_result[
-                "batch_id"
-            ],
+
+            "batch_id": (
+                ingestion_result[
+                    "batch_id"
+                ]
+            ),
+
             "ingestion_datetime_utc": (
                 ingestion_result[
                     "ingestion_datetime_utc"
                 ]
             ),
-            "raw_object_key": ingestion_result[
-                "object_key"
-            ],
-            "nombre_offres": quality_result[
-                "nombre_offres"
-            ],
-            "sha256": quality_result[
-                "sha256"
-            ],
-            "storage_status": ingestion_result[
-                "storage_status"
-            ],
+
+            "raw_object_key": (
+                ingestion_result[
+                    "object_key"
+                ]
+            ),
+
+            "nombre_offres": (
+                quality[
+                    "nombre_offres"
+                ]
+            ),
+
+            "sha256": (
+                quality[
+                    "sha256"
+                ]
+            ),
+
+            "storage_status": (
+                ingestion_result[
+                    "storage_status"
+                ]
+            ),
         }
 
-        print("Raw Quality Gate : VALIDE")
+        print(
+            "Raw Quality Gate : VALIDE"
+        )
+
         print(
             json.dumps(
                 result,
@@ -657,41 +841,63 @@ def france_travail_job_market_pipeline():
         return result
 
     # ========================================================
-    # 5. Création du contexte de processing
+    # 5. CONTEXTE PROCESSING
     # ========================================================
 
     @task(
-        task_id="create_processing_context",
+        task_id=(
+            "create_processing_context"
+        ),
         retries=0,
     )
     def create_processing_context(
         raw_validation_result: dict,
     ) -> dict:
         """
-        Crée l'identité du processing Raw -> Bronze -> Silver.
+        Le processing_run_id est créé une seule fois
+        pour le processing logique du DAG Run.
 
-        Le processing_run_id est déterministe pour un même DAG Run :
-        un retry conserve donc le même identifiant.
+        Il sera propagé :
+
+            Bronze P1
+                ↓
+            Silver P1
         """
 
-        if raw_validation_result["statut"] != "VALIDE":
-            raise RuntimeError(
-                "Impossible de créer le contexte de processing : "
-                "le Raw n'est pas valide."
+        ensure_equal(
+            raw_validation_result[
+                "statut"
+            ],
+            "VALIDE",
+            (
+                "statut Raw "
+                "avant processing"
+            ),
+        )
+
+        context = (
+            get_current_context()
+        )
+
+        run_id = (
+            context.get(
+                "run_id"
             )
-
-        context = get_current_context()
-
-        run_id = context.get("run_id")
+        )
 
         if not run_id:
-            task_instance = (
-                context.get("task_instance")
-                or context.get("ti")
+
+            ti = (
+                context.get(
+                    "task_instance"
+                )
+                or context.get(
+                    "ti"
+                )
             )
 
             run_id = getattr(
-                task_instance,
+                ti,
                 "run_id",
                 None,
             )
@@ -702,9 +908,11 @@ def france_travail_job_market_pipeline():
                 "le run_id Airflow."
             )
 
-        batch_id = raw_validation_result[
-            "batch_id"
-        ]
+        batch_id = (
+            raw_validation_result[
+                "batch_id"
+            ]
+        )
 
         processing_run_id = uuid5(
             NAMESPACE_URL,
@@ -717,20 +925,26 @@ def france_travail_job_market_pipeline():
         )
 
         result = {
-            "batch_id": batch_id,
+            "batch_id": (
+                batch_id
+            ),
+
             "processing_run_id": str(
                 processing_run_id
             ),
+
             "raw_object_key": (
                 raw_validation_result[
                     "raw_object_key"
                 ]
             ),
+
             "raw_sha256": (
                 raw_validation_result[
                     "sha256"
                 ]
             ),
+
             "nombre_offres": (
                 raw_validation_result[
                     "nombre_offres"
@@ -741,6 +955,7 @@ def france_travail_job_market_pipeline():
         print(
             "Contexte de processing créé :"
         )
+
         print(
             json.dumps(
                 result,
@@ -751,7 +966,7 @@ def france_travail_job_market_pipeline():
         return result
 
     # ========================================================
-    # 6. Transformation Raw -> Bronze
+    # 6. RAW -> BRONZE
     # ========================================================
 
     @task(
@@ -768,13 +983,6 @@ def france_travail_job_market_pipeline():
     def raw_to_bronze(
         processing_context: dict,
     ) -> dict:
-        """
-        Transforme le Raw validé en Bronze processing_v2.
-
-        Grâce à l'idempotence Bronze :
-        - premier passage : CREATED ;
-        - retry du même processing_run_id : REUSED.
-        """
 
         child_code = """
         import json
@@ -797,68 +1005,84 @@ def france_travail_job_market_pipeline():
             ],
         )
 
-        schema_drift_field_count = result.get(
+        drift_count = result.get(
             "schema_drift_field_count"
         )
 
-        if schema_drift_field_count is None:
-            schema_drift = result.get(
-                "schema_drift"
-            ) or {}
+        if drift_count is None:
 
-            schema_drift_field_count = len(
-                schema_drift
+            drift_count = len(
+                result.get(
+                    "schema_drift"
+                )
+                or {}
             )
 
-        compact_result = {
+        compact = {
             "batch_id": result[
                 "batch_id"
             ],
+
             "processing_run_id": result[
                 "processing_run_id"
             ],
+
             "source": result[
                 "source"
             ],
+
             "ingestion_date": result[
                 "ingestion_date"
             ],
+
             "schema_version": result[
                 "schema_version"
             ],
+
             "path_version": result[
                 "path_version"
             ],
+
             "raw_object_key": result[
                 "raw_object_key"
             ],
+
             "raw_sha256": result[
                 "raw_sha256"
             ],
+
             "bronze_object_key": result[
                 "bronze_object_key"
             ],
+
             "nombre_lignes_raw": result[
                 "nombre_lignes_raw"
             ],
+
             "nombre_lignes_bronze": result[
                 "nombre_lignes_bronze"
             ],
+
             "nombre_colonnes_bronze": result[
                 "nombre_colonnes_bronze"
             ],
+
             "schema_drift_detected": result[
                 "schema_drift_detected"
             ],
+
             "schema_drift_field_count": (
-                schema_drift_field_count
+                drift_count
             ),
+
             "size_bytes": result[
                 "size_bytes"
             ],
+
             "sha256": result[
                 "sha256"
             ],
+
             "storage_status": result[
                 "storage_status"
             ],
@@ -867,107 +1091,116 @@ def france_travail_job_market_pipeline():
         print(
             "__AIRFLOW_RESULT_JSON__="
             + json.dumps(
-                compact_result,
+                compact,
                 ensure_ascii=False,
             )
         )
         """
 
-        result = run_project_python(
-            python_code=child_code,
-            payload=processing_context,
+        result = (
+            run_project_python(
+                child_code,
+                processing_context,
+            )
         )
 
-        if (
-            result["batch_id"]
-            != processing_context["batch_id"]
-        ):
-            raise RuntimeError(
-                "batch_id incohérent après "
-                "transformation Bronze."
-            )
+        ensure_equal(
+            result[
+                "batch_id"
+            ],
+            processing_context[
+                "batch_id"
+            ],
+            "batch_id Bronze",
+        )
 
-        if (
-            result["processing_run_id"]
-            != processing_context[
+        ensure_equal(
+            result[
                 "processing_run_id"
-            ]
-        ):
-            raise RuntimeError(
-                "processing_run_id incohérent "
-                "après transformation Bronze."
-            )
+            ],
+            processing_context[
+                "processing_run_id"
+            ],
+            "processing_run_id Bronze",
+        )
 
-        if (
-            result["raw_object_key"]
-            != processing_context[
+        ensure_equal(
+            result[
                 "raw_object_key"
-            ]
-        ):
-            raise RuntimeError(
-                "raw_object_key incohérent "
-                "après transformation Bronze."
-            )
+            ],
+            processing_context[
+                "raw_object_key"
+            ],
+            "raw_object_key Bronze",
+        )
 
-        if (
-            result["raw_sha256"]
-            != processing_context[
+        ensure_equal(
+            result[
                 "raw_sha256"
-            ]
-        ):
-            raise RuntimeError(
-                "SHA-256 Raw incohérent "
-                "dans le lineage Bronze."
-            )
+            ],
+            processing_context[
+                "raw_sha256"
+            ],
+            "SHA-256 Raw dans Bronze",
+        )
 
-        if (
-            result["nombre_lignes_raw"]
-            != processing_context[
+        ensure_equal(
+            result[
+                "nombre_lignes_raw"
+            ],
+            processing_context[
                 "nombre_offres"
-            ]
-        ):
-            raise RuntimeError(
-                "Volume Raw incohérent "
-                "pendant la transformation Bronze."
-            )
+            ],
+            "volume Raw dans Bronze",
+        )
 
-        if (
-            result["nombre_lignes_bronze"]
-            != result["nombre_lignes_raw"]
-        ):
-            raise RuntimeError(
-                "Perte de lignes Raw -> Bronze."
-            )
+        ensure_equal(
+            result[
+                "nombre_lignes_bronze"
+            ],
+            result[
+                "nombre_lignes_raw"
+            ],
+            "non-perte Raw -> Bronze",
+        )
 
-        if result["schema_version"] != "2.0.0":
-            raise RuntimeError(
-                "Schema version Bronze inattendue : "
-                f"{result['schema_version']}"
-            )
+        ensure_equal(
+            result[
+                "schema_version"
+            ],
+            "2.0.0",
+            "schema Bronze",
+        )
 
-        if result["path_version"] != "processing_v2":
-            raise RuntimeError(
-                "Path version Bronze inattendue : "
-                f"{result['path_version']}"
-            )
+        ensure_equal(
+            result[
+                "path_version"
+            ],
+            "processing_v2",
+            "path Bronze",
+        )
 
-        if result["storage_status"] not in {
-            "CREATED",
-            "REUSED",
-        }:
-            raise RuntimeError(
-                "storage_status Bronze inattendu : "
-                f"{result['storage_status']}"
-            )
+        ensure_in(
+            result[
+                "storage_status"
+            ],
+            {
+                "CREATED",
+                "REUSED",
+            },
+            "storage_status Bronze",
+        )
 
         print(
-            "Transformation Raw -> Bronze terminée : "
+            "Transformation Raw -> Bronze : "
             f"{result['storage_status']}"
         )
+
         print(
             "Lignes Bronze : "
             f"{result['nombre_lignes_bronze']}"
         )
+
         print(
             "Objet Bronze : "
             f"{result['bronze_object_key']}"
@@ -976,7 +1209,7 @@ def france_travail_job_market_pipeline():
         return result
 
     # ========================================================
-    # 7. Bronze Quality Gate
+    # 7. QUALITY GATE BRONZE
     # ========================================================
 
     @task(
@@ -986,9 +1219,6 @@ def france_travail_job_market_pipeline():
     def validate_bronze(
         bronze_result: dict,
     ) -> dict:
-        """
-        Exécute le Quality Gate complet Bronze processing_v2.
-        """
 
         child_code = """
         import json
@@ -1008,49 +1238,63 @@ def france_travail_job_market_pipeline():
             ]
         )
 
-        compact_result = {
+        compact = {
             "statut": result[
                 "statut"
             ],
+
             "batch_id": result[
                 "batch_id"
             ],
+
             "processing_run_id": result[
                 "processing_run_id"
             ],
+
             "schema_version": result[
                 "schema_version"
             ],
+
             "path_version": result[
                 "path_version"
             ],
+
             "nombre_lignes_raw": result[
                 "nombre_lignes_raw"
             ],
+
             "nombre_lignes_bronze": result[
                 "nombre_lignes_bronze"
             ],
+
             "nombre_ids_uniques": result[
                 "nombre_ids_uniques"
             ],
+
             "nombre_colonnes_bronze": result[
                 "nombre_colonnes_bronze"
             ],
+
             "schema_drift_detected": result[
                 "schema_drift_detected"
             ],
+
             "schema_drift_field_count": result[
                 "schema_drift_field_count"
             ],
+
             "raw_object_key": result[
                 "raw_object_key"
             ],
+
             "bronze_object_key": result[
                 "bronze_object_key"
             ],
+
             "raw_sha256": result[
                 "raw_sha256"
             ],
+
             "bronze_sha256": result[
                 "bronze_sha256"
             ],
@@ -1059,198 +1303,156 @@ def france_travail_job_market_pipeline():
         print(
             "__AIRFLOW_RESULT_JSON__="
             + json.dumps(
-                compact_result,
+                compact,
                 ensure_ascii=False,
             )
         )
         """
 
-        quality_result = run_project_python(
-            python_code=child_code,
-            payload={
-                "bronze_object_key": (
-                    bronze_result[
-                        "bronze_object_key"
-                    ]
-                ),
-            },
+        quality = (
+            run_project_python(
+                child_code,
+                {
+                    "bronze_object_key": (
+                        bronze_result[
+                            "bronze_object_key"
+                        ]
+                    ),
+                },
+            )
         )
 
-        if quality_result["statut"] != "VALIDE":
-            raise RuntimeError(
-                "Bronze Quality Gate non valide."
-            )
+        ensure_equal(
+            quality[
+                "statut"
+            ],
+            "VALIDE",
+            (
+                "statut "
+                "Quality Gate Bronze"
+            ),
+        )
 
-        if (
-            quality_result["batch_id"]
-            != bronze_result["batch_id"]
-        ):
-            raise RuntimeError(
-                "batch_id incohérent entre "
-                "transformation et Quality Gate Bronze."
-            )
-
-        if (
-            quality_result["processing_run_id"]
-            != bronze_result[
-                "processing_run_id"
-            ]
-        ):
-            raise RuntimeError(
-                "processing_run_id incohérent entre "
-                "transformation et Quality Gate Bronze."
-            )
-
-        if (
-            quality_result["raw_object_key"]
-            != bronze_result[
-                "raw_object_key"
-            ]
-        ):
-            raise RuntimeError(
-                "raw_object_key incohérent dans "
-                "le Quality Gate Bronze."
-            )
-
-        if (
-            quality_result["bronze_object_key"]
-            != bronze_result[
-                "bronze_object_key"
-            ]
-        ):
-            raise RuntimeError(
-                "bronze_object_key incohérent dans "
-                "le Quality Gate Bronze."
-            )
-
-        if (
-            quality_result["raw_sha256"]
-            != bronze_result[
-                "raw_sha256"
-            ]
-        ):
-            raise RuntimeError(
-                "SHA-256 Raw incohérent entre "
-                "transformation et Quality Gate Bronze."
-            )
-
-        if (
-            quality_result["bronze_sha256"]
-            != bronze_result["sha256"]
-        ):
-            raise RuntimeError(
-                "SHA-256 Bronze incohérent entre "
-                "transformation et Quality Gate Bronze."
-            )
-
-        if (
-            quality_result["nombre_lignes_raw"]
-            != bronze_result[
-                "nombre_lignes_raw"
-            ]
-        ):
-            raise RuntimeError(
-                "Volume Raw incohérent dans "
-                "le Quality Gate Bronze."
-            )
-
-        if (
-            quality_result["nombre_lignes_bronze"]
-            != bronze_result[
-                "nombre_lignes_bronze"
-            ]
-        ):
-            raise RuntimeError(
-                "Volume Bronze incohérent dans "
-                "le Quality Gate Bronze."
-            )
-
-        if (
-            quality_result["nombre_ids_uniques"]
-            != quality_result[
-                "nombre_lignes_bronze"
-            ]
-        ):
-            raise RuntimeError(
-                "Le Bronze ne possède pas exactement "
-                "un ID unique par ligne."
-            )
-
-        if (
-            quality_result["schema_version"]
-            != "2.0.0"
-        ):
-            raise RuntimeError(
-                "Schema version Bronze invalide."
-            )
-
-        if (
-            quality_result["path_version"]
-            != "processing_v2"
-        ):
-            raise RuntimeError(
-                "Path version Bronze invalide."
-            )
-
-        result = {
-            "statut": "VALIDE",
-            "batch_id": quality_result[
+        ensure_equal(
+            quality[
                 "batch_id"
             ],
-            "processing_run_id": (
-                quality_result[
-                    "processing_run_id"
-                ]
-            ),
-            "raw_object_key": (
-                quality_result[
-                    "raw_object_key"
-                ]
-            ),
-            "bronze_object_key": (
-                quality_result[
-                    "bronze_object_key"
-                ]
-            ),
-            "nombre_lignes_bronze": (
-                quality_result[
-                    "nombre_lignes_bronze"
-                ]
-            ),
-            "nombre_ids_uniques": (
-                quality_result[
-                    "nombre_ids_uniques"
-                ]
-            ),
-            "nombre_colonnes_bronze": (
-                quality_result[
-                    "nombre_colonnes_bronze"
-                ]
-            ),
-            "schema_drift_detected": (
-                quality_result[
-                    "schema_drift_detected"
-                ]
-            ),
-            "schema_drift_field_count": (
-                quality_result[
-                    "schema_drift_field_count"
-                ]
-            ),
-            "raw_sha256": quality_result[
+            bronze_result[
+                "batch_id"
+            ],
+            "batch_id Bronze",
+        )
+
+        ensure_equal(
+            quality[
+                "processing_run_id"
+            ],
+            bronze_result[
+                "processing_run_id"
+            ],
+            "processing_run_id Bronze",
+        )
+
+        ensure_equal(
+            quality[
+                "raw_object_key"
+            ],
+            bronze_result[
+                "raw_object_key"
+            ],
+            "raw_object_key Bronze",
+        )
+
+        ensure_equal(
+            quality[
+                "bronze_object_key"
+            ],
+            bronze_result[
+                "bronze_object_key"
+            ],
+            "bronze_object_key",
+        )
+
+        ensure_equal(
+            quality[
                 "raw_sha256"
             ],
-            "bronze_sha256": (
-                quality_result[
-                    "bronze_sha256"
+            bronze_result[
+                "raw_sha256"
+            ],
+            "SHA-256 Raw du Bronze",
+        )
+
+        ensure_equal(
+            quality[
+                "bronze_sha256"
+            ],
+            bronze_result[
+                "sha256"
+            ],
+            "SHA-256 Bronze",
+        )
+
+        ensure_equal(
+            quality[
+                "nombre_lignes_raw"
+            ],
+            bronze_result[
+                "nombre_lignes_raw"
+            ],
+            "volume Raw QG Bronze",
+        )
+
+        ensure_equal(
+            quality[
+                "nombre_lignes_bronze"
+            ],
+            bronze_result[
+                "nombre_lignes_bronze"
+            ],
+            "volume Bronze QG",
+        )
+
+        ensure_equal(
+            quality[
+                "nombre_ids_uniques"
+            ],
+            quality[
+                "nombre_lignes_bronze"
+            ],
+            "IDs uniques Bronze",
+        )
+
+        ensure_equal(
+            quality[
+                "schema_version"
+            ],
+            "2.0.0",
+            "schema Bronze QG",
+        )
+
+        ensure_equal(
+            quality[
+                "path_version"
+            ],
+            "processing_v2",
+            "path Bronze QG",
+        )
+
+        result = {
+            **quality,
+
+            "storage_status": (
+                bronze_result[
+                    "storage_status"
                 ]
             ),
-            "storage_status": bronze_result[
-                "storage_status"
-            ],
         }
 
-        print("Bronze Quality Gate : VALIDE")
+        print(
+            "Bronze Quality Gate : VALIDE"
+        )
+
         print(
             json.dumps(
                 result,
@@ -1261,10 +1463,702 @@ def france_travail_job_market_pipeline():
         return result
 
     # ========================================================
-    # Dépendances
+    # 8. BRONZE -> SILVER
     # ========================================================
 
-    preflight_result = preflight()
+    @task(
+        task_id="bronze_to_silver",
+        retries=2,
+        retry_delay=timedelta(
+            minutes=2
+        ),
+        retry_exponential_backoff=True,
+        max_retry_delay=timedelta(
+            minutes=10
+        ),
+    )
+    def bronze_to_silver(
+        bronze_validation_result: dict,
+    ) -> dict:
+        """
+        Pipeline normal :
+
+            Bronze P1
+                ↓
+            Silver P1
+
+        Le même processing_run_id est propagé.
+        Aucun nouvel ID n'est créé pour Silver.
+        """
+
+        ensure_equal(
+            bronze_validation_result[
+                "statut"
+            ],
+            "VALIDE",
+            (
+                "statut Bronze "
+                "avant Silver"
+            ),
+        )
+
+        child_code = """
+        import json
+        import sys
+
+        from src.transformation.bronze_to_silver import (
+            run_silver_transformation,
+        )
+
+        payload = json.loads(
+            sys.argv[1]
+        )
+
+        result = run_silver_transformation(
+            bronze_object_key=payload[
+                "bronze_object_key"
+            ],
+            processing_run_id=payload[
+                "processing_run_id"
+            ],
+        )
+
+        compact = {
+            "batch_id": result[
+                "batch_id"
+            ],
+
+            "bronze_processing_run_id": result[
+                "bronze_processing_run_id"
+            ],
+
+            "processing_run_id": result[
+                "processing_run_id"
+            ],
+
+            "replay_silver": result[
+                "replay_silver"
+            ],
+
+            "source": result[
+                "source"
+            ],
+
+            "ingestion_date": result[
+                "ingestion_date"
+            ],
+
+            "schema_version": result[
+                "schema_version"
+            ],
+
+            "path_version": result[
+                "path_version"
+            ],
+
+            "raw_object_key": result[
+                "raw_object_key"
+            ],
+
+            "bronze_object_key": result[
+                "bronze_object_key"
+            ],
+
+            "silver_object_key": result[
+                "silver_object_key"
+            ],
+
+            "nombre_lignes_bronze": result[
+                "nombre_lignes_bronze"
+            ],
+
+            "nombre_lignes_silver": result[
+                "nombre_lignes_silver"
+            ],
+
+            "nombre_ids_uniques": result[
+                "nombre_ids_uniques"
+            ],
+
+            "nombre_colonnes_silver": result[
+                "nombre_colonnes_silver"
+            ],
+
+            "localisation_renseignee": result[
+                "localisation_renseignee"
+            ],
+
+            "coordonnees_renseignees": result[
+                "coordonnees_renseignees"
+            ],
+
+            "salaires_renseignes": result[
+                "salaires_renseignes"
+            ],
+
+            "information_entreprise_disponible": result[
+                "information_entreprise_disponible"
+            ],
+
+            "raw_sha256": result[
+                "raw_sha256"
+            ],
+
+            "bronze_sha256": result[
+                "bronze_sha256"
+            ],
+
+            "size_bytes": result[
+                "size_bytes"
+            ],
+
+            "sha256": result[
+                "sha256"
+            ],
+
+            "storage_status": result[
+                "storage_status"
+            ],
+        }
+
+        print(
+            "__AIRFLOW_RESULT_JSON__="
+            + json.dumps(
+                compact,
+                ensure_ascii=False,
+            )
+        )
+        """
+
+        result = (
+            run_project_python(
+                child_code,
+                {
+                    "bronze_object_key": (
+                        bronze_validation_result[
+                            "bronze_object_key"
+                        ]
+                    ),
+
+                    "processing_run_id": (
+                        bronze_validation_result[
+                            "processing_run_id"
+                        ]
+                    ),
+                },
+            )
+        )
+
+        ensure_equal(
+            result[
+                "batch_id"
+            ],
+            bronze_validation_result[
+                "batch_id"
+            ],
+            "batch_id Silver",
+        )
+
+        ensure_equal(
+            result[
+                "bronze_processing_run_id"
+            ],
+            bronze_validation_result[
+                "processing_run_id"
+            ],
+            (
+                "bronze_processing_run_id "
+                "Silver"
+            ),
+        )
+
+        ensure_equal(
+            result[
+                "processing_run_id"
+            ],
+            bronze_validation_result[
+                "processing_run_id"
+            ],
+            "processing_run_id Silver",
+        )
+
+        ensure_equal(
+            result[
+                "replay_silver"
+            ],
+            False,
+            "replay_silver",
+        )
+
+        ensure_equal(
+            result[
+                "bronze_object_key"
+            ],
+            bronze_validation_result[
+                "bronze_object_key"
+            ],
+            "bronze_object_key Silver",
+        )
+
+        ensure_equal(
+            result[
+                "raw_object_key"
+            ],
+            bronze_validation_result[
+                "raw_object_key"
+            ],
+            "raw_object_key Silver",
+        )
+
+        ensure_equal(
+            result[
+                "raw_sha256"
+            ],
+            bronze_validation_result[
+                "raw_sha256"
+            ],
+            "SHA-256 Raw Silver",
+        )
+
+        ensure_equal(
+            result[
+                "bronze_sha256"
+            ],
+            bronze_validation_result[
+                "bronze_sha256"
+            ],
+            "SHA-256 Bronze Silver",
+        )
+
+        ensure_equal(
+            result[
+                "nombre_lignes_bronze"
+            ],
+            bronze_validation_result[
+                "nombre_lignes_bronze"
+            ],
+            (
+                "volume Bronze "
+                "avant Silver"
+            ),
+        )
+
+        ensure_equal(
+            result[
+                "nombre_lignes_silver"
+            ],
+            result[
+                "nombre_lignes_bronze"
+            ],
+            (
+                "non-perte "
+                "Bronze -> Silver"
+            ),
+        )
+
+        ensure_equal(
+            result[
+                "nombre_ids_uniques"
+            ],
+            result[
+                "nombre_lignes_silver"
+            ],
+            "IDs uniques Silver",
+        )
+
+        ensure_equal(
+            result[
+                "schema_version"
+            ],
+            "2.0.0",
+            "schema Silver",
+        )
+
+        ensure_equal(
+            result[
+                "path_version"
+            ],
+            "processing_v2",
+            "path Silver",
+        )
+
+        ensure_in(
+            result[
+                "storage_status"
+            ],
+            {
+                "CREATED",
+                "REUSED",
+            },
+            "storage_status Silver",
+        )
+
+        print(
+            "Transformation Bronze -> Silver : "
+            f"{result['storage_status']}"
+        )
+
+        print(
+            "Lignes Silver : "
+            f"{result['nombre_lignes_silver']}"
+        )
+
+        print(
+            "Objet Silver : "
+            f"{result['silver_object_key']}"
+        )
+
+        return result
+
+    # ========================================================
+    # 9. QUALITY GATE SILVER
+    # ========================================================
+
+    @task(
+        task_id="validate_silver",
+        retries=0,
+    )
+    def validate_silver(
+        silver_result: dict,
+    ) -> dict:
+
+        child_code = """
+        import json
+        import sys
+
+        from src.quality.silver_r2_quality_check import (
+            validate_silver_object,
+        )
+
+        payload = json.loads(
+            sys.argv[1]
+        )
+
+        result = validate_silver_object(
+            silver_object_key=payload[
+                "silver_object_key"
+            ]
+        )
+
+        compact = {
+            "statut": result[
+                "statut"
+            ],
+
+            "batch_id": result[
+                "batch_id"
+            ],
+
+            "bronze_processing_run_id": result[
+                "bronze_processing_run_id"
+            ],
+
+            "processing_run_id": result[
+                "processing_run_id"
+            ],
+
+            "replay_silver": result[
+                "replay_silver"
+            ],
+
+            "schema_version": result[
+                "schema_version"
+            ],
+
+            "path_version": result[
+                "path_version"
+            ],
+
+            "nombre_lignes_raw": result[
+                "nombre_lignes_raw"
+            ],
+
+            "nombre_lignes_bronze": result[
+                "nombre_lignes_bronze"
+            ],
+
+            "nombre_lignes_silver": result[
+                "nombre_lignes_silver"
+            ],
+
+            "nombre_ids_uniques": result[
+                "nombre_ids_uniques"
+            ],
+
+            "nombre_colonnes_silver": result[
+                "nombre_colonnes_silver"
+            ],
+
+            "localisation_renseignee": result[
+                "localisation_renseignee"
+            ],
+
+            "taux_localisation_pct": result[
+                "taux_localisation_pct"
+            ],
+
+            "coordonnees_renseignees": result[
+                "coordonnees_renseignees"
+            ],
+
+            "taux_coordonnees_pct": result[
+                "taux_coordonnees_pct"
+            ],
+
+            "salaires_renseignes": result[
+                "salaires_renseignes"
+            ],
+
+            "taux_salaires_pct": result[
+                "taux_salaires_pct"
+            ],
+
+            "information_entreprise_disponible": result[
+                "information_entreprise_disponible"
+            ],
+
+            "taux_information_entreprise_pct": result[
+                "taux_information_entreprise_pct"
+            ],
+
+            "raw_object_key": result[
+                "raw_object_key"
+            ],
+
+            "bronze_object_key": result[
+                "bronze_object_key"
+            ],
+
+            "silver_object_key": result[
+                "silver_object_key"
+            ],
+
+            "raw_sha256": result[
+                "raw_sha256"
+            ],
+
+            "bronze_sha256": result[
+                "bronze_sha256"
+            ],
+
+            "silver_sha256": result[
+                "silver_sha256"
+            ],
+        }
+
+        print(
+            "__AIRFLOW_RESULT_JSON__="
+            + json.dumps(
+                compact,
+                ensure_ascii=False,
+            )
+        )
+        """
+
+        quality = (
+            run_project_python(
+                child_code,
+                {
+                    "silver_object_key": (
+                        silver_result[
+                            "silver_object_key"
+                        ]
+                    ),
+                },
+            )
+        )
+
+        ensure_equal(
+            quality[
+                "statut"
+            ],
+            "VALIDE",
+            (
+                "statut "
+                "Quality Gate Silver"
+            ),
+        )
+
+        ensure_equal(
+            quality[
+                "batch_id"
+            ],
+            silver_result[
+                "batch_id"
+            ],
+            "batch_id Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "bronze_processing_run_id"
+            ],
+            silver_result[
+                "bronze_processing_run_id"
+            ],
+            (
+                "bronze_processing_run_id "
+                "Silver QG"
+            ),
+        )
+
+        ensure_equal(
+            quality[
+                "processing_run_id"
+            ],
+            silver_result[
+                "processing_run_id"
+            ],
+            "processing_run_id Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "replay_silver"
+            ],
+            False,
+            "replay_silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "raw_object_key"
+            ],
+            silver_result[
+                "raw_object_key"
+            ],
+            "raw_object_key Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "bronze_object_key"
+            ],
+            silver_result[
+                "bronze_object_key"
+            ],
+            "bronze_object_key Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "silver_object_key"
+            ],
+            silver_result[
+                "silver_object_key"
+            ],
+            "silver_object_key Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "raw_sha256"
+            ],
+            silver_result[
+                "raw_sha256"
+            ],
+            "SHA-256 Raw Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "bronze_sha256"
+            ],
+            silver_result[
+                "bronze_sha256"
+            ],
+            "SHA-256 Bronze Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "silver_sha256"
+            ],
+            silver_result[
+                "sha256"
+            ],
+            "SHA-256 Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "nombre_lignes_bronze"
+            ],
+            silver_result[
+                "nombre_lignes_bronze"
+            ],
+            (
+                "volume Bronze "
+                "Silver QG"
+            ),
+        )
+
+        ensure_equal(
+            quality[
+                "nombre_lignes_silver"
+            ],
+            silver_result[
+                "nombre_lignes_silver"
+            ],
+            "volume Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "nombre_ids_uniques"
+            ],
+            quality[
+                "nombre_lignes_silver"
+            ],
+            "IDs uniques Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "schema_version"
+            ],
+            "2.0.0",
+            "schema Silver QG",
+        )
+
+        ensure_equal(
+            quality[
+                "path_version"
+            ],
+            "processing_v2",
+            "path Silver QG",
+        )
+
+        result = {
+            **quality,
+
+            "storage_status": (
+                silver_result[
+                    "storage_status"
+                ]
+            ),
+        }
+
+        print(
+            "Silver Quality Gate : VALIDE"
+        )
+
+        print(
+            json.dumps(
+                result,
+                indent=2,
+            )
+        )
+
+        return result
+
+    # ========================================================
+    # DEPENDANCES
+    # ========================================================
+
+    preflight_result = (
+        preflight()
+    )
 
     acquisition_context = (
         create_acquisition_context()
@@ -1272,12 +2166,16 @@ def france_travail_job_market_pipeline():
 
     preflight_result >> acquisition_context
 
-    ingestion_result = ingest_raw(
-        acquisition_context
+    ingestion_result = (
+        ingest_raw(
+            acquisition_context
+        )
     )
 
-    raw_validation_result = validate_raw(
-        ingestion_result
+    raw_validation_result = (
+        validate_raw(
+            ingestion_result
+        )
     )
 
     processing_context = (
@@ -1286,12 +2184,26 @@ def france_travail_job_market_pipeline():
         )
     )
 
-    bronze_result = raw_to_bronze(
-        processing_context
+    bronze_result = (
+        raw_to_bronze(
+            processing_context
+        )
     )
 
-    validate_bronze(
-        bronze_result
+    bronze_validation_result = (
+        validate_bronze(
+            bronze_result
+        )
+    )
+
+    silver_result = (
+        bronze_to_silver(
+            bronze_validation_result
+        )
+    )
+
+    validate_silver(
+        silver_result
     )
 
 
