@@ -90,7 +90,7 @@ def get_postgres_engine() -> Engine:
 
     load_dotenv(
         env_path,
-        override=True,
+        override=False,
     )
 
     postgres_user = os.getenv(

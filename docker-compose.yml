@@ -14,7 +14,6 @@ x-airflow-common: &airflow-common
     # ==========================================================
     # Airflow
     # ==========================================================
-
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
 
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
