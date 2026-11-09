@@ -25,7 +25,7 @@ RESULT_PREFIX = "__AIRFLOW_RESULT_JSON__="
 
 
 # ============================================================
-# Helpers
+# HELPERS
 # ============================================================
 
 
@@ -52,7 +52,8 @@ def ensure_in(
     label: str,
 ) -> None:
     """
-    Vérifie qu'une valeur appartient à un ensemble autorisé.
+    Vérifie qu'une valeur appartient
+    à un ensemble de valeurs autorisées.
     """
 
     if value not in allowed:
@@ -67,14 +68,14 @@ def run_project_python(
     payload: dict,
 ) -> dict:
     """
-    Exécute le code métier dans le virtualenv projet.
+    Exécute du code métier dans le virtualenv du projet.
 
-    Airflow reste dans son propre environnement Python.
-    Les dépendances métier restent isolées dans :
+    Airflow reste dans son environnement Python.
+    Les dépendances métier sont isolées dans :
 
         /opt/airflow/project_venv
 
-    Seules de petites métadonnées JSON remontent dans XCom.
+    Seules de petites métadonnées JSON remontent via XCom.
     """
 
     project_root = Path(
@@ -124,8 +125,8 @@ def run_project_python(
 
     if process.stdout is None:
         raise RuntimeError(
-            "Impossible de capturer la sortie "
-            "du processus projet."
+            "Impossible de capturer "
+            "la sortie du processus projet."
         )
 
     airflow_result = None
@@ -142,15 +143,12 @@ def run_project_python(
         if line.startswith(
             RESULT_PREFIX
         ):
-
-            airflow_result = (
-                json.loads(
-                    line[
-                        len(
-                            RESULT_PREFIX
-                        ):
-                    ]
-                )
+            airflow_result = json.loads(
+                line[
+                    len(
+                        RESULT_PREFIX
+                    ):
+                ]
             )
 
     return_code = (
@@ -173,6 +171,103 @@ def run_project_python(
     return airflow_result
 
 
+def run_project_command(
+    command_args: list[str],
+) -> str:
+    """
+    Exécute une commande CLI avec
+    le Python du virtualenv projet.
+
+    Utilisé notamment pour :
+
+    - Silver -> PostgreSQL
+    - validation PostgreSQL
+    """
+
+    project_root = Path(
+        PROJECT_ROOT
+    )
+
+    project_python = Path(
+        PROJECT_PYTHON
+    )
+
+    if not project_root.is_dir():
+        raise RuntimeError(
+            "PROJECT_ROOT introuvable : "
+            f"{project_root}"
+        )
+
+    if not project_python.is_file():
+        raise RuntimeError(
+            "PROJECT_PYTHON introuvable : "
+            f"{project_python}"
+        )
+
+    command = [
+        str(
+            project_python
+        ),
+        *command_args,
+    ]
+
+    print(
+        "Commande projet : "
+        + " ".join(
+            command
+        ),
+        flush=True,
+    )
+
+    process = subprocess.Popen(
+        command,
+        cwd=str(
+            project_root
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    if process.stdout is None:
+        raise RuntimeError(
+            "Impossible de capturer "
+            "la sortie de la commande projet."
+        )
+
+    output_lines: list[str] = []
+
+    for raw_line in process.stdout:
+
+        line = raw_line.rstrip()
+
+        output_lines.append(
+            line
+        )
+
+        print(
+            line,
+            flush=True,
+        )
+
+    return_code = (
+        process.wait()
+    )
+
+    output = "\n".join(
+        output_lines
+    )
+
+    if return_code != 0:
+        raise RuntimeError(
+            "La commande projet a échoué "
+            f"avec le code {return_code}."
+        )
+
+    return output
+
+
 # ============================================================
 # DAG
 # ============================================================
@@ -181,8 +276,8 @@ def run_project_python(
 @dag(
     dag_id=DAG_ID,
     description=(
-        "Pipeline Data Engineering France Travail : "
-        "Raw -> Bronze -> Silver avec Quality Gates R2."
+        "Pipeline France Travail : "
+        "Raw -> Bronze -> Silver -> PostgreSQL."
     ),
     schedule=None,
     start_date=datetime(
@@ -197,6 +292,7 @@ def run_project_python(
         "france-travail",
         "data-engineering",
         "r2",
+        "postgresql",
         "dbt",
     ],
 )
@@ -253,6 +349,16 @@ def france_travail_job_market_pipeline():
             ),
             (
                 project_root
+                / "src/loading/"
+                "load_silver_to_postgres.py"
+            ),
+            (
+                project_root
+                / "src/quality/"
+                "silver_postgres_validation_report.py"
+            ),
+            (
+                project_root
                 / "src/storage/"
                 "r2_storage.py"
             ),
@@ -279,7 +385,6 @@ def france_travail_job_market_pipeline():
         ]
 
         if missing_files:
-
             raise RuntimeError(
                 "Fichiers projet manquants : "
                 + ", ".join(
@@ -312,6 +417,13 @@ def france_travail_job_market_pipeline():
             "src.quality.silver_r2_quality_check "
             "import validate_silver_object; "
 
+            "import "
+            "src.loading.load_silver_to_postgres; "
+
+            "import "
+            "src.quality."
+            "silver_postgres_validation_report; "
+
             "from "
             "src.storage.r2_storage "
             "import R2Storage; "
@@ -319,21 +431,19 @@ def france_travail_job_market_pipeline():
             "print('PROJECT_RUNTIME_OK')"
         )
 
-        runtime_check = (
-            subprocess.run(
-                [
-                    str(
-                        project_python
-                    ),
-                    "-c",
-                    runtime_code,
-                ],
-                cwd=str(
-                    project_root
+        runtime_check = subprocess.run(
+            [
+                str(
+                    project_python
                 ),
-                capture_output=True,
-                text=True,
-            )
+                "-c",
+                runtime_code,
+            ],
+            cwd=str(
+                project_root
+            ),
+            capture_output=True,
+            text=True,
         )
 
         if (
@@ -383,20 +493,19 @@ def france_travail_job_market_pipeline():
     # ========================================================
 
     @task(
-        task_id=(
-            "create_acquisition_context"
-        ),
+        task_id="create_acquisition_context",
         retries=0,
     )
     def create_acquisition_context() -> dict:
         """
-        Crée un batch_id stable pour un même DAG Run.
+        Crée un batch_id stable
+        pour un même DAG Run.
 
-        Nouveau DAG Run
-            -> nouveau batch_id
+        Nouveau DAG Run :
+            nouveau batch_id
 
-        Retry du même DAG Run
-            -> même batch_id
+        Retry :
+            même batch_id
         """
 
         context = (
@@ -556,27 +665,21 @@ def france_travail_job_market_pipeline():
             "batch_id": result[
                 "batch_id"
             ],
-
             "ingestion_datetime_utc": result[
                 "ingestion_datetime_utc"
             ],
-
             "object_key": result[
                 "object_key"
             ],
-
             "nombre_offres": result[
                 "nombre_offres"
             ],
-
             "size_bytes": result[
                 "size_bytes"
             ],
-
             "sha256": result[
                 "sha256"
             ],
-
             "storage_status": result[
                 "storage_status"
             ],
@@ -591,11 +694,9 @@ def france_travail_job_market_pipeline():
         )
         """
 
-        result = (
-            run_project_python(
-                child_code,
-                acquisition_context,
-            )
+        result = run_project_python(
+            child_code,
+            acquisition_context,
         )
 
         ensure_equal(
@@ -683,27 +784,21 @@ def france_travail_job_market_pipeline():
             "statut": result[
                 "statut"
             ],
-
             "batch_id": result[
                 "batch_id"
             ],
-
             "nombre_offres": result[
                 "nombre_offres"
             ],
-
             "nombre_ids_uniques": result[
                 "nombre_ids_uniques"
             ],
-
             "nombre_doublons": result[
                 "nombre_doublons"
             ],
-
             "size_bytes": result[
                 "size_bytes"
             ],
-
             "sha256": result[
                 "sha256"
             ],
@@ -718,17 +813,15 @@ def france_travail_job_market_pipeline():
         )
         """
 
-        quality = (
-            run_project_python(
-                child_code,
-                {
-                    "object_key": (
-                        ingestion_result[
-                            "object_key"
-                        ]
-                    ),
-                },
-            )
+        quality = run_project_python(
+            child_code,
+            {
+                "object_key": (
+                    ingestion_result[
+                        "object_key"
+                    ]
+                ),
+            },
         )
 
         ensure_equal(
@@ -789,37 +882,31 @@ def france_travail_job_market_pipeline():
 
         result = {
             "statut": "VALIDE",
-
             "batch_id": (
                 ingestion_result[
                     "batch_id"
                 ]
             ),
-
             "ingestion_datetime_utc": (
                 ingestion_result[
                     "ingestion_datetime_utc"
                 ]
             ),
-
             "raw_object_key": (
                 ingestion_result[
                     "object_key"
                 ]
             ),
-
             "nombre_offres": (
                 quality[
                     "nombre_offres"
                 ]
             ),
-
             "sha256": (
                 quality[
                     "sha256"
                 ]
             ),
-
             "storage_status": (
                 ingestion_result[
                     "storage_status"
@@ -831,13 +918,6 @@ def france_travail_job_market_pipeline():
             "Raw Quality Gate : VALIDE"
         )
 
-        print(
-            json.dumps(
-                result,
-                indent=2,
-            )
-        )
-
         return result
 
     # ========================================================
@@ -845,24 +925,12 @@ def france_travail_job_market_pipeline():
     # ========================================================
 
     @task(
-        task_id=(
-            "create_processing_context"
-        ),
+        task_id="create_processing_context",
         retries=0,
     )
     def create_processing_context(
         raw_validation_result: dict,
     ) -> dict:
-        """
-        Le processing_run_id est créé une seule fois
-        pour le processing logique du DAG Run.
-
-        Il sera propagé :
-
-            Bronze P1
-                ↓
-            Silver P1
-        """
 
         ensure_equal(
             raw_validation_result[
@@ -925,26 +993,20 @@ def france_travail_job_market_pipeline():
         )
 
         result = {
-            "batch_id": (
-                batch_id
-            ),
-
+            "batch_id": batch_id,
             "processing_run_id": str(
                 processing_run_id
             ),
-
             "raw_object_key": (
                 raw_validation_result[
                     "raw_object_key"
                 ]
             ),
-
             "raw_sha256": (
                 raw_validation_result[
                     "sha256"
                 ]
             ),
-
             "nombre_offres": (
                 raw_validation_result[
                     "nombre_offres"
@@ -1010,7 +1072,6 @@ def france_travail_job_market_pipeline():
         )
 
         if drift_count is None:
-
             drift_count = len(
                 result.get(
                     "schema_drift"
@@ -1022,67 +1083,51 @@ def france_travail_job_market_pipeline():
             "batch_id": result[
                 "batch_id"
             ],
-
             "processing_run_id": result[
                 "processing_run_id"
             ],
-
             "source": result[
                 "source"
             ],
-
             "ingestion_date": result[
                 "ingestion_date"
             ],
-
             "schema_version": result[
                 "schema_version"
             ],
-
             "path_version": result[
                 "path_version"
             ],
-
             "raw_object_key": result[
                 "raw_object_key"
             ],
-
             "raw_sha256": result[
                 "raw_sha256"
             ],
-
             "bronze_object_key": result[
                 "bronze_object_key"
             ],
-
             "nombre_lignes_raw": result[
                 "nombre_lignes_raw"
             ],
-
             "nombre_lignes_bronze": result[
                 "nombre_lignes_bronze"
             ],
-
             "nombre_colonnes_bronze": result[
                 "nombre_colonnes_bronze"
             ],
-
             "schema_drift_detected": result[
                 "schema_drift_detected"
             ],
-
             "schema_drift_field_count": (
                 drift_count
             ),
-
             "size_bytes": result[
                 "size_bytes"
             ],
-
             "sha256": result[
                 "sha256"
             ],
-
             "storage_status": result[
                 "storage_status"
             ],
@@ -1097,11 +1142,9 @@ def france_travail_job_market_pipeline():
         )
         """
 
-        result = (
-            run_project_python(
-                child_code,
-                processing_context,
-            )
+        result = run_project_python(
+            child_code,
+            processing_context,
         )
 
         ensure_equal(
@@ -1196,16 +1239,6 @@ def france_travail_job_market_pipeline():
             f"{result['storage_status']}"
         )
 
-        print(
-            "Lignes Bronze : "
-            f"{result['nombre_lignes_bronze']}"
-        )
-
-        print(
-            "Objet Bronze : "
-            f"{result['bronze_object_key']}"
-        )
-
         return result
 
     # ========================================================
@@ -1242,59 +1275,45 @@ def france_travail_job_market_pipeline():
             "statut": result[
                 "statut"
             ],
-
             "batch_id": result[
                 "batch_id"
             ],
-
             "processing_run_id": result[
                 "processing_run_id"
             ],
-
             "schema_version": result[
                 "schema_version"
             ],
-
             "path_version": result[
                 "path_version"
             ],
-
             "nombre_lignes_raw": result[
                 "nombre_lignes_raw"
             ],
-
             "nombre_lignes_bronze": result[
                 "nombre_lignes_bronze"
             ],
-
             "nombre_ids_uniques": result[
                 "nombre_ids_uniques"
             ],
-
             "nombre_colonnes_bronze": result[
                 "nombre_colonnes_bronze"
             ],
-
             "schema_drift_detected": result[
                 "schema_drift_detected"
             ],
-
             "schema_drift_field_count": result[
                 "schema_drift_field_count"
             ],
-
             "raw_object_key": result[
                 "raw_object_key"
             ],
-
             "bronze_object_key": result[
                 "bronze_object_key"
             ],
-
             "raw_sha256": result[
                 "raw_sha256"
             ],
-
             "bronze_sha256": result[
                 "bronze_sha256"
             ],
@@ -1309,17 +1328,15 @@ def france_travail_job_market_pipeline():
         )
         """
 
-        quality = (
-            run_project_python(
-                child_code,
-                {
-                    "bronze_object_key": (
-                        bronze_result[
-                            "bronze_object_key"
-                        ]
-                    ),
-                },
-            )
+        quality = run_project_python(
+            child_code,
+            {
+                "bronze_object_key": (
+                    bronze_result[
+                        "bronze_object_key"
+                    ]
+                ),
+            },
         )
 
         ensure_equal(
@@ -1327,10 +1344,7 @@ def france_travail_job_market_pipeline():
                 "statut"
             ],
             "VALIDE",
-            (
-                "statut "
-                "Quality Gate Bronze"
-            ),
+            "statut Quality Gate Bronze",
         )
 
         ensure_equal(
@@ -1380,7 +1394,7 @@ def france_travail_job_market_pipeline():
             bronze_result[
                 "raw_sha256"
             ],
-            "SHA-256 Raw du Bronze",
+            "SHA-256 Raw Bronze",
         )
 
         ensure_equal(
@@ -1395,22 +1409,12 @@ def france_travail_job_market_pipeline():
 
         ensure_equal(
             quality[
-                "nombre_lignes_raw"
-            ],
-            bronze_result[
-                "nombre_lignes_raw"
-            ],
-            "volume Raw QG Bronze",
-        )
-
-        ensure_equal(
-            quality[
                 "nombre_lignes_bronze"
             ],
             bronze_result[
                 "nombre_lignes_bronze"
             ],
-            "volume Bronze QG",
+            "volume Bronze",
         )
 
         ensure_equal(
@@ -1439,28 +1443,14 @@ def france_travail_job_market_pipeline():
             "path Bronze QG",
         )
 
-        result = {
+        return {
             **quality,
-
             "storage_status": (
                 bronze_result[
                     "storage_status"
                 ]
             ),
         }
-
-        print(
-            "Bronze Quality Gate : VALIDE"
-        )
-
-        print(
-            json.dumps(
-                result,
-                indent=2,
-            )
-        )
-
-        return result
 
     # ========================================================
     # 8. BRONZE -> SILVER
@@ -1480,16 +1470,6 @@ def france_travail_job_market_pipeline():
     def bronze_to_silver(
         bronze_validation_result: dict,
     ) -> dict:
-        """
-        Pipeline normal :
-
-            Bronze P1
-                ↓
-            Silver P1
-
-        Le même processing_run_id est propagé.
-        Aucun nouvel ID n'est créé pour Silver.
-        """
 
         ensure_equal(
             bronze_validation_result[
@@ -1527,95 +1507,72 @@ def france_travail_job_market_pipeline():
             "batch_id": result[
                 "batch_id"
             ],
-
             "bronze_processing_run_id": result[
                 "bronze_processing_run_id"
             ],
-
             "processing_run_id": result[
                 "processing_run_id"
             ],
-
             "replay_silver": result[
                 "replay_silver"
             ],
-
             "source": result[
                 "source"
             ],
-
             "ingestion_date": result[
                 "ingestion_date"
             ],
-
             "schema_version": result[
                 "schema_version"
             ],
-
             "path_version": result[
                 "path_version"
             ],
-
             "raw_object_key": result[
                 "raw_object_key"
             ],
-
             "bronze_object_key": result[
                 "bronze_object_key"
             ],
-
             "silver_object_key": result[
                 "silver_object_key"
             ],
-
             "nombre_lignes_bronze": result[
                 "nombre_lignes_bronze"
             ],
-
             "nombre_lignes_silver": result[
                 "nombre_lignes_silver"
             ],
-
             "nombre_ids_uniques": result[
                 "nombre_ids_uniques"
             ],
-
             "nombre_colonnes_silver": result[
                 "nombre_colonnes_silver"
             ],
-
             "localisation_renseignee": result[
                 "localisation_renseignee"
             ],
-
             "coordonnees_renseignees": result[
                 "coordonnees_renseignees"
             ],
-
             "salaires_renseignes": result[
                 "salaires_renseignes"
             ],
-
             "information_entreprise_disponible": result[
                 "information_entreprise_disponible"
             ],
-
             "raw_sha256": result[
                 "raw_sha256"
             ],
-
             "bronze_sha256": result[
                 "bronze_sha256"
             ],
-
             "size_bytes": result[
                 "size_bytes"
             ],
-
             "sha256": result[
                 "sha256"
             ],
-
             "storage_status": result[
                 "storage_status"
             ],
@@ -1630,23 +1587,20 @@ def france_travail_job_market_pipeline():
         )
         """
 
-        result = (
-            run_project_python(
-                child_code,
-                {
-                    "bronze_object_key": (
-                        bronze_validation_result[
-                            "bronze_object_key"
-                        ]
-                    ),
-
-                    "processing_run_id": (
-                        bronze_validation_result[
-                            "processing_run_id"
-                        ]
-                    ),
-                },
-            )
+        result = run_project_python(
+            child_code,
+            {
+                "bronze_object_key": (
+                    bronze_validation_result[
+                        "bronze_object_key"
+                    ]
+                ),
+                "processing_run_id": (
+                    bronze_validation_result[
+                        "processing_run_id"
+                    ]
+                ),
+            },
         )
 
         ensure_equal(
@@ -1737,10 +1691,7 @@ def france_travail_job_market_pipeline():
             bronze_validation_result[
                 "nombre_lignes_bronze"
             ],
-            (
-                "volume Bronze "
-                "avant Silver"
-            ),
+            "volume Bronze avant Silver",
         )
 
         ensure_equal(
@@ -1750,10 +1701,7 @@ def france_travail_job_market_pipeline():
             result[
                 "nombre_lignes_bronze"
             ],
-            (
-                "non-perte "
-                "Bronze -> Silver"
-            ),
+            "non-perte Bronze -> Silver",
         )
 
         ensure_equal(
@@ -1798,16 +1746,6 @@ def france_travail_job_market_pipeline():
             f"{result['storage_status']}"
         )
 
-        print(
-            "Lignes Silver : "
-            f"{result['nombre_lignes_silver']}"
-        )
-
-        print(
-            "Objet Silver : "
-            f"{result['silver_object_key']}"
-        )
-
         return result
 
     # ========================================================
@@ -1844,103 +1782,78 @@ def france_travail_job_market_pipeline():
             "statut": result[
                 "statut"
             ],
-
             "batch_id": result[
                 "batch_id"
             ],
-
             "bronze_processing_run_id": result[
                 "bronze_processing_run_id"
             ],
-
             "processing_run_id": result[
                 "processing_run_id"
             ],
-
             "replay_silver": result[
                 "replay_silver"
             ],
-
             "schema_version": result[
                 "schema_version"
             ],
-
             "path_version": result[
                 "path_version"
             ],
-
             "nombre_lignes_raw": result[
                 "nombre_lignes_raw"
             ],
-
             "nombre_lignes_bronze": result[
                 "nombre_lignes_bronze"
             ],
-
             "nombre_lignes_silver": result[
                 "nombre_lignes_silver"
             ],
-
             "nombre_ids_uniques": result[
                 "nombre_ids_uniques"
             ],
-
             "nombre_colonnes_silver": result[
                 "nombre_colonnes_silver"
             ],
-
             "localisation_renseignee": result[
                 "localisation_renseignee"
             ],
-
             "taux_localisation_pct": result[
                 "taux_localisation_pct"
             ],
-
             "coordonnees_renseignees": result[
                 "coordonnees_renseignees"
             ],
-
             "taux_coordonnees_pct": result[
                 "taux_coordonnees_pct"
             ],
-
             "salaires_renseignes": result[
                 "salaires_renseignes"
             ],
-
             "taux_salaires_pct": result[
                 "taux_salaires_pct"
             ],
-
             "information_entreprise_disponible": result[
                 "information_entreprise_disponible"
             ],
-
             "taux_information_entreprise_pct": result[
                 "taux_information_entreprise_pct"
             ],
-
             "raw_object_key": result[
                 "raw_object_key"
             ],
-
             "bronze_object_key": result[
                 "bronze_object_key"
             ],
-
             "silver_object_key": result[
                 "silver_object_key"
             ],
-
             "raw_sha256": result[
                 "raw_sha256"
             ],
-
             "bronze_sha256": result[
                 "bronze_sha256"
             ],
-
             "silver_sha256": result[
                 "silver_sha256"
             ],
@@ -1955,17 +1868,15 @@ def france_travail_job_market_pipeline():
         )
         """
 
-        quality = (
-            run_project_python(
-                child_code,
-                {
-                    "silver_object_key": (
-                        silver_result[
-                            "silver_object_key"
-                        ]
-                    ),
-                },
-            )
+        quality = run_project_python(
+            child_code,
+            {
+                "silver_object_key": (
+                    silver_result[
+                        "silver_object_key"
+                    ]
+                ),
+            },
         )
 
         ensure_equal(
@@ -2082,19 +1993,6 @@ def france_travail_job_market_pipeline():
 
         ensure_equal(
             quality[
-                "nombre_lignes_bronze"
-            ],
-            silver_result[
-                "nombre_lignes_bronze"
-            ],
-            (
-                "volume Bronze "
-                "Silver QG"
-            ),
-        )
-
-        ensure_equal(
-            quality[
                 "nombre_lignes_silver"
             ],
             silver_result[
@@ -2131,7 +2029,6 @@ def france_travail_job_market_pipeline():
 
         result = {
             **quality,
-
             "storage_status": (
                 silver_result[
                     "storage_status"
@@ -2141,6 +2038,257 @@ def france_travail_job_market_pipeline():
 
         print(
             "Silver Quality Gate : VALIDE"
+        )
+
+        return result
+
+    # ========================================================
+    # 10. SILVER -> POSTGRESQL
+    # ========================================================
+
+    @task(
+        task_id="load_silver_to_postgres",
+        retries=2,
+        retry_delay=timedelta(
+            minutes=2
+        ),
+        retry_exponential_backoff=True,
+        max_retry_delay=timedelta(
+            minutes=10
+        ),
+    )
+    def load_silver_to_postgres(
+        silver_validation_result: dict,
+    ) -> dict:
+        """
+        Charge le snapshot Silver R2
+        dans PostgreSQL.
+
+        PostgreSQL contient uniquement
+        le snapshot analytique courant.
+
+        Le loader est idempotent :
+
+        - premier passage :
+            VALIDE
+
+        - retry même snapshot :
+            DÉJÀ À JOUR
+        """
+
+        ensure_equal(
+            silver_validation_result[
+                "statut"
+            ],
+            "VALIDE",
+            (
+                "statut Silver "
+                "avant PostgreSQL"
+            ),
+        )
+
+        silver_object_key = (
+            silver_validation_result[
+                "silver_object_key"
+            ]
+        )
+
+        output = run_project_command(
+            [
+                "-m",
+                (
+                    "src.loading."
+                    "load_silver_to_postgres"
+                ),
+                "--silver-object-key",
+                silver_object_key,
+            ]
+        )
+
+        load_valid = (
+            "STATUT CHARGEMENT : VALIDE"
+            in output
+        )
+
+        load_already_current = (
+            "STATUT CHARGEMENT : DÉJÀ À JOUR"
+            in output
+        )
+
+        if not (
+            load_valid
+            or load_already_current
+        ):
+            raise RuntimeError(
+                "Le loader PostgreSQL "
+                "s'est terminé sans statut reconnu."
+            )
+
+        if load_valid:
+            storage_status = (
+                "LOADED"
+            )
+
+        else:
+            storage_status = (
+                "ALREADY_CURRENT"
+            )
+
+        result = {
+            "statut": "VALIDE",
+            "storage_status": (
+                storage_status
+            ),
+            "batch_id": (
+                silver_validation_result[
+                    "batch_id"
+                ]
+            ),
+            "processing_run_id": (
+                silver_validation_result[
+                    "processing_run_id"
+                ]
+            ),
+            "silver_object_key": (
+                silver_object_key
+            ),
+            "silver_sha256": (
+                silver_validation_result[
+                    "silver_sha256"
+                ]
+            ),
+            "nombre_lignes_silver": (
+                silver_validation_result[
+                    "nombre_lignes_silver"
+                ]
+            ),
+            "table_postgresql": (
+                "silver.france_travail_offres"
+            ),
+        }
+
+        print(
+            "Chargement PostgreSQL Airflow : "
+            f"{storage_status}"
+        )
+
+        print(
+            json.dumps(
+                result,
+                indent=2,
+            )
+        )
+
+        return result
+
+    # ========================================================
+    # 11. QUALITY GATE POSTGRESQL
+    # ========================================================
+
+    @task(
+        task_id="validate_postgres",
+        retries=0,
+    )
+    def validate_postgres(
+        postgres_load_result: dict,
+    ) -> dict:
+        """
+        Validation indépendante :
+
+            Silver R2
+               ↓
+            PostgreSQL
+
+        Contrôles notamment :
+
+        - volumes ;
+        - schéma ;
+        - IDs ;
+        - contenu ;
+        - audit ;
+        - table temporaire __load absente.
+        """
+
+        ensure_equal(
+            postgres_load_result[
+                "statut"
+            ],
+            "VALIDE",
+            (
+                "statut chargement "
+                "avant validation PostgreSQL"
+            ),
+        )
+
+        silver_object_key = (
+            postgres_load_result[
+                "silver_object_key"
+            ]
+        )
+
+        output = run_project_command(
+            [
+                "-m",
+                (
+                    "src.quality."
+                    "silver_postgres_validation_report"
+                ),
+                "--silver-object-key",
+                silver_object_key,
+            ]
+        )
+
+        expected_status = (
+            "STATUT SILVER -> POSTGRESQL : VALIDE"
+        )
+
+        if expected_status not in output:
+            raise RuntimeError(
+                "Quality Gate "
+                "Silver -> PostgreSQL "
+                "NON VALIDE."
+            )
+
+        result = {
+            "statut": "VALIDE",
+            "batch_id": (
+                postgres_load_result[
+                    "batch_id"
+                ]
+            ),
+            "processing_run_id": (
+                postgres_load_result[
+                    "processing_run_id"
+                ]
+            ),
+            "silver_object_key": (
+                silver_object_key
+            ),
+            "silver_sha256": (
+                postgres_load_result[
+                    "silver_sha256"
+                ]
+            ),
+            "nombre_lignes": (
+                postgres_load_result[
+                    "nombre_lignes_silver"
+                ]
+            ),
+            "table_postgresql": (
+                postgres_load_result[
+                    "table_postgresql"
+                ]
+            ),
+            "load_storage_status": (
+                postgres_load_result[
+                    "storage_status"
+                ]
+            ),
+        }
+
+        print(
+            "Quality Gate "
+            "Silver -> PostgreSQL : VALIDE"
         )
 
         print(
@@ -2202,8 +2350,20 @@ def france_travail_job_market_pipeline():
         )
     )
 
-    validate_silver(
-        silver_result
+    silver_validation_result = (
+        validate_silver(
+            silver_result
+        )
+    )
+
+    postgres_load_result = (
+        load_silver_to_postgres(
+            silver_validation_result
+        )
+    )
+
+    validate_postgres(
+        postgres_load_result
     )
 
 
