@@ -1439,13 +1439,13 @@ def write_json_report(
 def write_markdown_summary(
     report: Dict[str, Any],
 ) -> Path:
-    DOCS_DIR.mkdir(
+    REPORTS_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
 
     output_path = (
-        DOCS_DIR
+        REPORTS_DIR
         / (
             "silver_postgres_"
             "validation_summary.md"
