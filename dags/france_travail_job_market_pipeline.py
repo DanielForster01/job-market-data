@@ -281,6 +281,459 @@ def run_project_command(
 
     return output
 
+# ============================================================
+# MONITORING CALLBACKS
+# ============================================================
+
+
+def _get_airflow_run_id(
+    context: dict,
+) -> str:
+    """
+    Récupère de manière défensive
+    l'identifiant du DAG Run Airflow.
+    """
+
+    run_id = context.get(
+        "run_id"
+    )
+
+    if not run_id:
+
+        dag_run = context.get(
+            "dag_run"
+        )
+
+        run_id = getattr(
+            dag_run,
+            "run_id",
+            None,
+        )
+
+    if not run_id:
+
+        ti = (
+            context.get(
+                "task_instance"
+            )
+            or context.get(
+                "ti"
+            )
+        )
+
+        run_id = getattr(
+            ti,
+            "run_id",
+            None,
+        )
+
+    if not run_id:
+        raise RuntimeError(
+            "Impossible de récupérer "
+            "le run_id Airflow pour "
+            "le monitoring."
+        )
+
+    return str(
+        run_id
+    )
+
+
+def monitoring_success_callback(
+    context: dict,
+) -> None:
+    """
+    Finalise le monitoring lorsqu'un DAG Run
+    complet se termine avec succès.
+    """
+
+    try:
+
+        run_id = _get_airflow_run_id(
+            context
+        )
+
+        ti = (
+            context.get(
+                "task_instance"
+            )
+            or context.get(
+                "ti"
+            )
+        )
+
+        if ti is None:
+            raise RuntimeError(
+                "TaskInstance absente du "
+                "contexte du callback SUCCESS."
+            )
+
+        silver_result = ti.xcom_pull(
+            task_ids="validate_silver"
+        )
+
+        postgres_result = ti.xcom_pull(
+            task_ids="validate_postgres"
+        )
+
+        dbt_result = ti.xcom_pull(
+            task_ids="dbt_build"
+        )
+
+        if not isinstance(
+            silver_result,
+            dict,
+        ):
+            raise RuntimeError(
+                "XCom validate_silver "
+                "introuvable."
+            )
+
+        if not isinstance(
+            postgres_result,
+            dict,
+        ):
+            raise RuntimeError(
+                "XCom validate_postgres "
+                "introuvable."
+            )
+
+        if not isinstance(
+            dbt_result,
+            dict,
+        ):
+            raise RuntimeError(
+                "XCom dbt_build introuvable."
+            )
+
+        if (
+            dbt_result.get(
+                "dbt_status"
+            )
+            != "BUILT"
+        ):
+            raise RuntimeError(
+                "Statut dbt inattendu dans "
+                "le callback SUCCESS."
+            )
+
+        child_code = """
+        import json
+        import sys
+
+        from src.monitoring.pipeline_monitoring import (
+            complete_pipeline_run,
+        )
+
+        payload = json.loads(
+            sys.argv[1]
+        )
+
+        result = complete_pipeline_run(
+            dag_id=payload[
+                "dag_id"
+            ],
+            dag_run_id=payload[
+                "dag_run_id"
+            ],
+            batch_id=payload[
+                "batch_id"
+            ],
+            processing_run_id=payload[
+                "processing_run_id"
+            ],
+            raw_object_key=payload[
+                "raw_object_key"
+            ],
+            bronze_object_key=payload[
+                "bronze_object_key"
+            ],
+            silver_object_key=payload[
+                "silver_object_key"
+            ],
+            raw_row_count=payload[
+                "raw_row_count"
+            ],
+            bronze_row_count=payload[
+                "bronze_row_count"
+            ],
+            silver_row_count=payload[
+                "silver_row_count"
+            ],
+            postgres_row_count=payload[
+                "postgres_row_count"
+            ],
+            dbt_status="SUCCESS",
+        )
+
+        print(
+            "__AIRFLOW_RESULT_JSON__="
+            + json.dumps(
+                result,
+                default=str,
+            )
+        )
+        """
+
+        run_project_python(
+            child_code,
+            {
+                "dag_id": DAG_ID,
+                "dag_run_id": run_id,
+
+                "batch_id": (
+                    silver_result[
+                        "batch_id"
+                    ]
+                ),
+
+                "processing_run_id": (
+                    silver_result[
+                        "processing_run_id"
+                    ]
+                ),
+
+                "raw_object_key": (
+                    silver_result[
+                        "raw_object_key"
+                    ]
+                ),
+
+                "bronze_object_key": (
+                    silver_result[
+                        "bronze_object_key"
+                    ]
+                ),
+
+                "silver_object_key": (
+                    silver_result[
+                        "silver_object_key"
+                    ]
+                ),
+
+                "raw_row_count": (
+                    silver_result[
+                        "nombre_lignes_raw"
+                    ]
+                ),
+
+                "bronze_row_count": (
+                    silver_result[
+                        "nombre_lignes_bronze"
+                    ]
+                ),
+
+                "silver_row_count": (
+                    silver_result[
+                        "nombre_lignes_silver"
+                    ]
+                ),
+
+                "postgres_row_count": (
+                    postgres_result[
+                        "nombre_lignes"
+                    ]
+                ),
+            },
+        )
+
+        print(
+            "Monitoring pipeline : SUCCESS",
+            flush=True,
+        )
+
+    except Exception as exc:
+
+        # Une panne du monitoring ne doit pas
+        # transformer un pipeline métier réussi
+        # en échec.
+        print(
+            "WARNING - Impossible de finaliser "
+            "le monitoring SUCCESS : "
+            f"{exc}",
+            flush=True,
+        )
+
+
+def monitoring_failure_callback(
+    context: dict,
+) -> None:
+    """
+    Finalise le monitoring lorsqu'un DAG Run
+    se termine en échec.
+    """
+
+    try:
+
+        run_id = _get_airflow_run_id(
+            context
+        )
+
+        ti = (
+            context.get(
+                "task_instance"
+            )
+            or context.get(
+                "ti"
+            )
+        )
+
+        failed_task_id = getattr(
+            ti,
+            "task_id",
+            None,
+        )
+
+        exception = context.get(
+            "exception"
+        )
+
+        error_message = (
+            str(
+                exception
+            )
+            if exception
+            else (
+                "DAG Airflow en échec"
+                + (
+                    f" sur la tâche "
+                    f"{failed_task_id}."
+                    if failed_task_id
+                    else "."
+                )
+            )
+        )
+
+        logical_date = context.get(
+            "logical_date"
+        )
+
+        if logical_date is None:
+
+            dag_run = context.get(
+                "dag_run"
+            )
+
+            logical_date = getattr(
+                dag_run,
+                "logical_date",
+                None,
+            )
+
+            if logical_date is None:
+
+                logical_date = getattr(
+                    dag_run,
+                    "run_after",
+                    None,
+                )
+
+        child_code = """
+        import json
+        import sys
+
+        from src.monitoring.pipeline_monitoring import (
+            fail_pipeline_run,
+            start_pipeline_run,
+        )
+
+        payload = json.loads(
+            sys.argv[1]
+        )
+
+        try:
+
+            result = fail_pipeline_run(
+                dag_id=payload[
+                    "dag_id"
+                ],
+                dag_run_id=payload[
+                    "dag_run_id"
+                ],
+                failed_task_id=payload.get(
+                    "failed_task_id"
+                ),
+                error_message=payload.get(
+                    "error_message"
+                ),
+            )
+
+        except RuntimeError:
+
+            # Cas exceptionnel :
+            # échec avant que start_monitoring
+            # ait pu créer la ligne.
+            start_pipeline_run(
+                dag_id=payload[
+                    "dag_id"
+                ],
+                dag_run_id=payload[
+                    "dag_run_id"
+                ],
+                logical_date=payload.get(
+                    "logical_date"
+                ),
+            )
+
+            result = fail_pipeline_run(
+                dag_id=payload[
+                    "dag_id"
+                ],
+                dag_run_id=payload[
+                    "dag_run_id"
+                ],
+                failed_task_id=payload.get(
+                    "failed_task_id"
+                ),
+                error_message=payload.get(
+                    "error_message"
+                ),
+            )
+
+        print(
+            "__AIRFLOW_RESULT_JSON__="
+            + json.dumps(
+                result,
+                default=str,
+            )
+        )
+        """
+
+        run_project_python(
+            child_code,
+            {
+                "dag_id": DAG_ID,
+                "dag_run_id": run_id,
+                "failed_task_id": (
+                    failed_task_id
+                ),
+                "error_message": (
+                    error_message
+                ),
+                "logical_date": (
+                    logical_date.isoformat()
+                    if logical_date
+                    else None
+                ),
+            },
+        )
+
+        print(
+            "Monitoring pipeline : FAILED",
+            flush=True,
+        )
+
+    except Exception as exc:
+
+        # On préserve toujours l'erreur
+        # originale du pipeline.
+        print(
+            "WARNING - Impossible de finaliser "
+            "le monitoring FAILED : "
+            f"{exc}",
+            flush=True,
+        )
+
 
 # ============================================================
 # DAG
@@ -302,6 +755,12 @@ def run_project_command(
     ),
     catchup=False,
     max_active_runs=1,
+    on_success_callback=(
+        monitoring_success_callback
+    ),
+    on_failure_callback=(
+        monitoring_failure_callback
+    ),
     tags=[
         "france-travail",
         "data-engineering",
@@ -311,6 +770,93 @@ def run_project_command(
     ],
 )
 def france_travail_job_market_pipeline():
+
+    # ========================================================
+    # 0. MONITORING START
+    # ========================================================
+
+    @task(
+        task_id="start_monitoring",
+        retries=0,
+    )
+    def start_monitoring() -> dict:
+
+        context = (
+            get_current_context()
+        )
+
+        run_id = _get_airflow_run_id(
+            context
+        )
+
+        logical_date = context.get(
+            "logical_date"
+        )
+
+        if logical_date is None:
+
+            dag_run = context.get(
+                "dag_run"
+            )
+
+            logical_date = getattr(
+                dag_run,
+                "run_after",
+                None,
+            )
+
+        child_code = """
+        import json
+        import sys
+
+        from src.monitoring.pipeline_monitoring import (
+            start_pipeline_run,
+        )
+
+        payload = json.loads(
+            sys.argv[1]
+        )
+
+        result = start_pipeline_run(
+            dag_id=payload[
+                "dag_id"
+            ],
+            dag_run_id=payload[
+                "dag_run_id"
+            ],
+            logical_date=payload.get(
+                "logical_date"
+            ),
+        )
+
+        print(
+            "__AIRFLOW_RESULT_JSON__="
+            + json.dumps(
+                result,
+                default=str,
+            )
+        )
+        """
+
+        result = run_project_python(
+            child_code,
+            {
+                "dag_id": DAG_ID,
+                "dag_run_id": run_id,
+                "logical_date": (
+                    logical_date.isoformat()
+                    if logical_date
+                    else None
+                ),
+            },
+        )
+
+        print(
+            "Monitoring pipeline démarré.",
+            flush=True,
+        )
+
+        return result
 
     # ========================================================
     # 1. PREFLIGHT
@@ -2459,6 +3005,9 @@ def france_travail_job_market_pipeline():
     # ========================================================
     # DEPENDANCES
     # ========================================================
+    monitoring_start_result = (
+        start_monitoring()
+    )
 
     preflight_result = (
         preflight()
@@ -2467,7 +3016,7 @@ def france_travail_job_market_pipeline():
     acquisition_context = (
         create_acquisition_context()
     )
-
+    monitoring_start_result >> preflight_result
     preflight_result >> acquisition_context
 
     ingestion_result = (
