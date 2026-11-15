@@ -367,6 +367,13 @@ def monitoring_success_callback(
                 "TaskInstance absente du "
                 "contexte du callback SUCCESS."
             )
+        raw_result = ti.xcom_pull(
+            task_ids="validate_raw"
+        )
+
+        bronze_result = ti.xcom_pull(
+            task_ids="validate_bronze"
+        )
 
         silver_result = ti.xcom_pull(
             task_ids="validate_silver"
@@ -380,6 +387,21 @@ def monitoring_success_callback(
             task_ids="dbt_build"
         )
 
+        if not isinstance(
+            raw_result,
+            dict,
+        ):
+            raise RuntimeError(
+                "XCom validate_raw introuvable."
+            )
+
+        if not isinstance(
+            bronze_result,
+            dict,
+        ):
+            raise RuntimeError(
+                "XCom validate_bronze introuvable."
+            )
         if not isinstance(
             silver_result,
             dict,
@@ -423,6 +445,7 @@ def monitoring_success_callback(
 
         from src.monitoring.pipeline_monitoring import (
             complete_pipeline_run,
+            record_data_quality_metrics,
         )
 
         payload = json.loads(
@@ -464,6 +487,20 @@ def monitoring_success_callback(
                 "postgres_row_count"
             ],
             dbt_status="SUCCESS",
+        )
+
+        quality_result = (
+            record_data_quality_metrics(
+                dag_id=payload[
+                    "dag_id"
+                ],
+                dag_run_id=payload[
+                    "dag_run_id"
+                ],
+                metrics=payload[
+                    "quality_metrics"
+                ],
+            )
         )
 
         print(
@@ -534,6 +571,174 @@ def monitoring_success_callback(
                         "nombre_lignes"
                     ]
                 ),
+
+                "quality_metrics": [
+                    {
+                        "layer": "RAW",
+                        "metric_name": "row_count",
+                        "metric_value": (
+                            raw_result[
+                                "nombre_offres"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_raw",
+                    },
+
+                    {
+                        "layer": "BRONZE",
+                        "metric_name": "row_count",
+                        "metric_value": (
+                            bronze_result[
+                                "nombre_lignes_bronze"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_bronze",
+                    },
+                    {
+                        "layer": "BRONZE",
+                        "metric_name": "unique_id_count",
+                        "metric_value": (
+                            bronze_result[
+                                "nombre_ids_uniques"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_bronze",
+                    },
+                    {
+                        "layer": "BRONZE",
+                        "metric_name": "column_count",
+                        "metric_value": (
+                            bronze_result[
+                                "nombre_colonnes_bronze"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_bronze",
+                    },
+                    {
+                        "layer": "BRONZE",
+                        "metric_name": "schema_drift_field_count",
+                        "metric_value": (
+                            bronze_result[
+                                "schema_drift_field_count"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_bronze",
+                    },
+                    {
+                        "layer": "BRONZE",
+                        "metric_name": "schema_drift_detected",
+                        "metric_value": (
+                            bronze_result[
+                                "schema_drift_detected"
+                            ]
+                        ),
+                        "metric_unit": "boolean",
+                        "source_task_id": "validate_bronze",
+                    },
+
+                    {
+                        "layer": "SILVER",
+                        "metric_name": "row_count",
+                        "metric_value": (
+                            silver_result[
+                                "nombre_lignes_silver"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_silver",
+                    },
+                    {
+                        "layer": "SILVER",
+                        "metric_name": "unique_id_count",
+                        "metric_value": (
+                            silver_result[
+                                "nombre_ids_uniques"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_silver",
+                    },
+                    {
+                        "layer": "SILVER",
+                        "metric_name": "column_count",
+                        "metric_value": (
+                            silver_result[
+                                "nombre_colonnes_silver"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_silver",
+                    },
+                    {
+                        "layer": "SILVER",
+                        "metric_name": "localisation_pct",
+                        "metric_value": (
+                            silver_result[
+                                "taux_localisation_pct"
+                            ]
+                        ),
+                        "metric_unit": "percent",
+                        "source_task_id": "validate_silver",
+                    },
+                    {
+                        "layer": "SILVER",
+                        "metric_name": "coordinates_pct",
+                        "metric_value": (
+                            silver_result[
+                                "taux_coordonnees_pct"
+                            ]
+                        ),
+                        "metric_unit": "percent",
+                        "source_task_id": "validate_silver",
+                    },
+                    {
+                        "layer": "SILVER",
+                        "metric_name": "salary_available_pct",
+                        "metric_value": (
+                            silver_result[
+                                "taux_salaires_pct"
+                            ]
+                        ),
+                        "metric_unit": "percent",
+                        "source_task_id": "validate_silver",
+                    },
+                    {
+                        "layer": "SILVER",
+                        "metric_name": "company_information_pct",
+                        "metric_value": (
+                            silver_result[
+                                "taux_information_entreprise_pct"
+                            ]
+                        ),
+                        "metric_unit": "percent",
+                        "source_task_id": "validate_silver",
+                    },
+
+                    {
+                        "layer": "POSTGRES",
+                        "metric_name": "row_count",
+                        "metric_value": (
+                            postgres_result[
+                                "nombre_lignes"
+                            ]
+                        ),
+                        "metric_unit": "count",
+                        "source_task_id": "validate_postgres",
+                    },
+
+                    {
+                        "layer": "DBT",
+                        "metric_name": "build_success",
+                        "metric_value": True,
+                        "metric_unit": "boolean",
+                        "source_task_id": "dbt_build",
+                    },
+                ],
             },
         )
 

@@ -516,3 +516,316 @@ def fail_pipeline_run(
     return dict(
         row
     )
+
+ALLOWED_QUALITY_LAYERS = {
+    "RAW",
+    "BRONZE",
+    "SILVER",
+    "POSTGRES",
+    "DBT",
+}
+
+ALLOWED_METRIC_UNITS = {
+    "count",
+    "percent",
+    "boolean",
+}
+
+
+def record_data_quality_metrics(
+    *,
+    dag_id: str,
+    dag_run_id: str,
+    metrics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Historise les métriques de qualité
+    associées à un DAG Run.
+
+    Une métrique est identifiée par :
+
+        pipeline_run_id
+        + layer
+        + metric_name
+
+    L'écriture est idempotente :
+    une métrique rejouée est mise à jour
+    au lieu d'être dupliquée.
+    """
+
+    if not dag_id:
+        raise ValueError(
+            "dag_id est obligatoire."
+        )
+
+    if not dag_run_id:
+        raise ValueError(
+            "dag_run_id est obligatoire."
+        )
+
+    if not metrics:
+        raise ValueError(
+            "La liste metrics ne peut pas "
+            "être vide."
+        )
+
+    normalized_metrics = []
+
+    for metric in metrics:
+
+        layer = str(
+            metric.get(
+                "layer",
+                "",
+            )
+        ).strip().upper()
+
+        metric_name = str(
+            metric.get(
+                "metric_name",
+                "",
+            )
+        ).strip()
+
+        metric_unit = str(
+            metric.get(
+                "metric_unit",
+                "",
+            )
+        ).strip().lower()
+
+        source_task_id = str(
+            metric.get(
+                "source_task_id",
+                "",
+            )
+        ).strip()
+
+        metric_value = metric.get(
+            "metric_value"
+        )
+
+        if layer not in ALLOWED_QUALITY_LAYERS:
+            raise ValueError(
+                "Layer de monitoring invalide : "
+                f"{layer!r}."
+            )
+
+        if not metric_name:
+            raise ValueError(
+                "metric_name est obligatoire."
+            )
+
+        if metric_unit not in ALLOWED_METRIC_UNITS:
+            raise ValueError(
+                "metric_unit invalide : "
+                f"{metric_unit!r}."
+            )
+
+        if not source_task_id:
+            raise ValueError(
+                "source_task_id est obligatoire."
+            )
+
+        if metric_value is None:
+            raise ValueError(
+                f"metric_value manquant pour "
+                f"{layer}.{metric_name}."
+            )
+
+        if metric_unit == "boolean":
+
+            if metric_value not in {
+                True,
+                False,
+                1,
+                0,
+            }:
+                raise ValueError(
+                    "Une métrique boolean doit "
+                    "valoir True, False, 1 ou 0."
+                )
+
+            normalized_value = (
+                1
+                if bool(metric_value)
+                else 0
+            )
+
+        elif metric_unit == "count":
+
+            if isinstance(
+                metric_value,
+                bool,
+            ):
+                raise ValueError(
+                    "Une métrique count ne peut "
+                    "pas être un booléen."
+                )
+
+            numeric_value = float(
+                metric_value
+            )
+
+            if (
+                numeric_value < 0
+                or not numeric_value.is_integer()
+            ):
+                raise ValueError(
+                    "Une métrique count doit être "
+                    "un entier positif ou nul."
+                )
+
+            normalized_value = int(
+                numeric_value
+            )
+
+        else:
+
+            normalized_value = float(
+                metric_value
+            )
+
+            if not (
+                0
+                <= normalized_value
+                <= 100
+            ):
+                raise ValueError(
+                    "Une métrique percent doit "
+                    "être comprise entre 0 et 100."
+                )
+
+        normalized_metrics.append(
+            {
+                "layer": layer,
+                "metric_name": metric_name,
+                "metric_value": (
+                    normalized_value
+                ),
+                "metric_unit": metric_unit,
+                "source_task_id": (
+                    source_task_id
+                ),
+            }
+        )
+
+    engine = get_postgres_engine()
+
+    pipeline_run_query = text(
+        f"""
+        SELECT
+            pipeline_run_id
+        FROM
+            {MONITORING_SCHEMA}.
+            {PIPELINE_RUNS_TABLE}
+        WHERE
+            dag_id = :dag_id
+            AND dag_run_id = :dag_run_id;
+        """
+    )
+
+    metric_query = text(
+        """
+        INSERT INTO
+            monitoring.data_quality_metrics
+        (
+            pipeline_run_id,
+            layer,
+            metric_name,
+            metric_value,
+            metric_unit,
+            source_task_id
+        )
+        VALUES
+        (
+            :pipeline_run_id,
+            :layer,
+            :metric_name,
+            :metric_value,
+            :metric_unit,
+            :source_task_id
+        )
+
+        ON CONFLICT (
+            pipeline_run_id,
+            layer,
+            metric_name
+        )
+        DO UPDATE SET
+            metric_value =
+                EXCLUDED.metric_value,
+
+            metric_unit =
+                EXCLUDED.metric_unit,
+
+            source_task_id =
+                EXCLUDED.source_task_id,
+
+            updated_at = NOW()
+
+        RETURNING
+            metric_id,
+            pipeline_run_id,
+            layer,
+            metric_name,
+            metric_value,
+            metric_unit,
+            source_task_id;
+        """
+    )
+
+    recorded_metrics = []
+
+    with engine.begin() as connection:
+
+        pipeline_run_id = (
+            connection.execute(
+                pipeline_run_query,
+                {
+                    "dag_id": dag_id,
+                    "dag_run_id": dag_run_id,
+                },
+            )
+            .scalar_one_or_none()
+        )
+
+        if pipeline_run_id is None:
+            raise RuntimeError(
+                "DAG Run introuvable dans "
+                "monitoring.pipeline_runs : "
+                f"dag_id={dag_id!r}, "
+                f"dag_run_id={dag_run_id!r}."
+            )
+
+        for metric in normalized_metrics:
+
+            row = (
+                connection.execute(
+                    metric_query,
+                    {
+                        "pipeline_run_id": (
+                            pipeline_run_id
+                        ),
+                        **metric,
+                    },
+                )
+                .mappings()
+                .one()
+            )
+
+            recorded_metrics.append(
+                dict(
+                    row
+                )
+            )
+
+    return {
+        "pipeline_run_id": pipeline_run_id,
+        "dag_id": dag_id,
+        "dag_run_id": dag_run_id,
+        "metrics_recorded": len(
+            recorded_metrics
+        ),
+        "metrics": recorded_metrics,
+    }
