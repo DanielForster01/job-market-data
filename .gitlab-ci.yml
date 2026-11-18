@@ -57,7 +57,7 @@ python_syntax:
     - echo "Validation syntaxique Python..."
     - python --version
     - python -m compileall -q src dags
-    - echo "Validation Python : OK"
+    - 'echo "Validation Python : OK"'
 
 
 grafana_json:
@@ -69,7 +69,7 @@ grafana_json:
   script:
     - echo "Validation du dashboard Grafana..."
     - python -m json.tool monitoring/grafana/dashboards/job-market-observability.json > /dev/null
-    - echo "Dashboard Grafana JSON : OK"
+    - 'echo "Dashboard Grafana JSON : OK"'
 
 
 prometheus_config:
@@ -111,7 +111,7 @@ dbt_parse:
         --project-dir dbt_project
         --profiles-dir dbt_project
         --no-partial-parse
-    - echo "dbt parse : OK"
+    - 'echo "dbt parse : OK"'
 
 
 # ============================================================
@@ -137,4 +137,4 @@ python_local_tests:
     - python -m src.storage.test_r2_paths
     - python -m src.utils.test_run_context
 
-    - echo "Tests Python locaux : OK"
+    - 'echo "Tests Python locaux : OK"'
