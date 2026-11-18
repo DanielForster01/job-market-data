@@ -1,0 +1,140 @@
+# ============================================================
+# GitLab CI - job-market-data
+# CI V1
+# ============================================================
+
+stages:
+  - validate
+  - test
+
+
+# ============================================================
+# Pipeline rules
+#
+# - Une branche sans Merge Request => pipeline de branche
+# - Une Merge Request ouverte => pipeline de Merge Request
+# - Évite les pipelines en double
+# ============================================================
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"'
+      when: never
+
+    - if: '$CI_COMMIT_BRANCH'
+
+
+# ============================================================
+# Variables communes
+# ============================================================
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+  # Valeurs CI utilisées uniquement pour permettre à dbt
+  # de charger profiles.yml pendant dbt parse.
+  # Aucun PostgreSQL réel n'est utilisé dans cette CI V1.
+  POSTGRES_HOST: "localhost"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "job_market_ci"
+  POSTGRES_USER: "job_market_ci"
+  POSTGRES_PASSWORD: "job_market_ci_password"
+
+
+# ============================================================
+# VALIDATE
+# ============================================================
+
+python_syntax:
+  stage: validate
+
+  image:
+    name: python:3.10-slim
+
+  script:
+    - echo "Validation syntaxique Python..."
+    - python --version
+    - python -m compileall -q src dags
+    - echo "Validation Python : OK"
+
+
+grafana_json:
+  stage: validate
+
+  image:
+    name: python:3.10-slim
+
+  script:
+    - echo "Validation du dashboard Grafana..."
+    - python -m json.tool monitoring/grafana/dashboards/job-market-observability.json > /dev/null
+    - echo "Dashboard Grafana JSON : OK"
+
+
+prometheus_config:
+  stage: validate
+
+  image:
+    name: prom/prometheus:v3.13.5
+    entrypoint: [""]
+
+  script:
+    - echo "Validation de la configuration Prometheus..."
+    - /bin/promtool check config monitoring/prometheus/prometheus.yml
+
+
+dbt_parse:
+  stage: validate
+
+  image:
+    name: python:3.10-slim
+
+  cache:
+    key: "dbt-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .cache/pip/
+
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+    DBT_PROFILES_DIR: "$CI_PROJECT_DIR/dbt_project"
+
+  before_script:
+    - python --version
+    - python -m pip install --upgrade pip
+    - python -m pip install dbt-core==1.12.2 dbt-postgres==1.11.0
+
+  script:
+    - echo "Validation du projet dbt..."
+    - dbt --version
+    - dbt parse
+        --project-dir dbt_project
+        --profiles-dir dbt_project
+        --no-partial-parse
+    - echo "dbt parse : OK"
+
+
+# ============================================================
+# TEST
+# ============================================================
+
+python_local_tests:
+  stage: test
+
+  image:
+    name: python:3.10-slim
+
+  before_script:
+    # test_run_context vérifie notamment le contexte Git.
+    - apt-get update
+    - apt-get install -y --no-install-recommends git
+    - rm -rf /var/lib/apt/lists/*
+    - git --version
+
+  script:
+    - echo "Tests locaux sans dépendance externe..."
+
+    - python -m src.storage.test_r2_paths
+    - python -m src.utils.test_run_context
+
+    - echo "Tests Python locaux : OK"
